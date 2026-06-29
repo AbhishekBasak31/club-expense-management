@@ -11,7 +11,7 @@ import helmet       from "helmet";
 import compression  from "compression";
 
 import DB_Connection from "./src/Db/Db.js";
-import { errorHandler, notFound } from "./src/Middleware/error.middleware.js";
+import { errorHandler, notFound } from "./src/Middleware/Error.middleware.js";
 
 // ── Module routers ───────────────────────────────────────────────
 import AuthRouter       from "./src/Routers/User.routes.js";
