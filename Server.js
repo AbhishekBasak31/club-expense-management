@@ -21,7 +21,7 @@ import ProductRouter    from "./src/Routers/Product.routes.js";
 import UOMRouter        from "./src/Routers/Uom.routes.js";
 import ConversionRouter from "./src/Routers/ProductConversion.routes.js";
 import ExpenseRouter    from "./src/Routers/Expense.routes.js";
-
+import PLRouter         from "./src/Routers/Pl.router.js";
 const app  = express();
 const PORT = process.env.PORT || 7000;
 
@@ -90,7 +90,7 @@ app.use("/api/v1/products",            ProductRouter);
 app.use("/api/v1/uoms",                UOMRouter);
 app.use("/api/v1/product-conversions", ConversionRouter);
 app.use("/api/v1/expenses",            ExpenseRouter);
-
+app.use("/api/v1/pl-statements",       PLRouter);
 // ── Error handling (must be last) ────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);
