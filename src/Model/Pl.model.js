@@ -6,7 +6,7 @@ import mongoose from "mongoose";
 // Shape mirrors the frontend exactly:
 //   PLStatement { month, expenses: PLGroup[], revenues: PLGroup[] }
 //   PLGroup     { label, expandable, items: PLSubItem[] }
-//   PLSubItem   { label, amount }
+//   PLSubItem   { label, unitPrice, gstPercent, gstAmount, finalAmount }
 //
 // Design decisions:
 //   • One document per month ("2026-07") — unique index enforces this,
@@ -16,16 +16,26 @@ import mongoose from "mongoose";
 //     client-side for React keys / inline-edit targeting) but we let
 //     Mongo assign real ObjectIds server-side instead of trusting the
 //     client's generated ids — the controller remaps them.
+//   • Money is stored as unitPrice + gstPercent (the only two values a
+//     person actually types); gstAmount and finalAmount are ALWAYS
+//     recalculated server-side from those two on every write, never
+//     trusted from the client request body — same rule
+//     Expense.controller.js already applies to expense items
+//     (qty × unitPrice × gstPercent).
 //   • groupTotal / sideTotal / netPL are NEVER stored — always
 //     server-derived at read/aggregation time so they can't drift
-//     from the underlying item amounts (same "never trust client
-//     totals" rule used in Expense.modal.js).
+//     from the underlying item amounts.
 // ─────────────────────────────────────────────────────────────────
 
 const PLSubItemSchema = new mongoose.Schema(
   {
-    label  : { type: String, required: true, trim: true },
-    amount : { type: Number, default: 0, min: 0 },
+    label       : { type: String, required: true, trim: true },
+    unitPrice   : { type: Number, default: 0, min: 0 },
+    gstPercent  : { type: Number, default: 0, min: 0, max: 100 },
+    // Server-calculated on every save — see calcSubItem() in the controller.
+    // Never trust these two if they arrive in a request body.
+    gstAmount   : { type: Number, default: 0, min: 0 },
+    finalAmount : { type: Number, default: 0, min: 0 },
   },
   { _id: true }
 );

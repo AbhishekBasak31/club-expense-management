@@ -1,18 +1,38 @@
-import { PLStatement } from "../Model/Pl.model.js";
+import { PLStatement } from "../Model/PL.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
 // ─────────────────────────────────────────────────────────────────
-// HELPERS — server-side totals (never trust client-computed sums)
+// HELPERS — server-side pricing (never trust client-computed sums)
 // ─────────────────────────────────────────────────────────────────
-const groupTotal = (g) => (g.items || []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
-const sideTotal  = (groups = []) => groups.reduce((s, g) => s + groupTotal(g), 0);
+
+// The only calculation that matters: gstAmount and finalAmount are ALWAYS
+// derived from unitPrice + gstPercent here, never taken from the request
+// body — same rule Expense.controller.js applies to expense items.
+const calcSubItem = (unitPrice, gstPercent) => {
+  const u = Number(unitPrice) || 0;
+  const g = Math.min(100, Math.max(0, Number(gstPercent) || 0));
+  const gstAmount = Math.round((u * g / 100) * 100) / 100;
+  const finalAmount = Math.round((u + gstAmount) * 100) / 100;
+  return { unitPrice: u, gstPercent: g, gstAmount, finalAmount };
+};
+
+const groupTotal     = (g) => (g.items || []).reduce((s, i) => s + (Number(i.finalAmount) || 0), 0);
+const groupUnitTotal = (g) => (g.items || []).reduce((s, i) => s + (Number(i.unitPrice)   || 0), 0);
+const groupGstTotal  = (g) => (g.items || []).reduce((s, i) => s + (Number(i.gstAmount)    || 0), 0);
+const sideTotal      = (groups = []) => groups.reduce((s, g) => s + groupTotal(g), 0);
+const sideUnitTotal  = (groups = []) => groups.reduce((s, g) => s + groupUnitTotal(g), 0);
+const sideGstTotal   = (groups = []) => groups.reduce((s, g) => s + groupGstTotal(g), 0);
 
 // Strips any client-sent totals and re-derives them, so the response
 // always reflects the real sum of item amounts.
 const withTotals = (stmt) => {
   const plain = stmt.toObject ? stmt.toObject() : stmt;
-  const expenses = (plain.expenses || []).map((g) => ({ ...g, total: groupTotal(g) }));
-  const revenues = (plain.revenues || []).map((g) => ({ ...g, total: groupTotal(g) }));
+  const expenses = (plain.expenses || []).map((g) => ({
+    ...g, total: groupTotal(g), unitTotal: groupUnitTotal(g), gstTotal: groupGstTotal(g),
+  }));
+  const revenues = (plain.revenues || []).map((g) => ({
+    ...g, total: groupTotal(g), unitTotal: groupUnitTotal(g), gstTotal: groupGstTotal(g),
+  }));
   const totalExpenses = sideTotal(expenses);
   const totalRevenue  = sideTotal(revenues);
   return {
@@ -21,13 +41,18 @@ const withTotals = (stmt) => {
     revenues,
     totalExpenses,
     totalRevenue,
+    totalExpenseUnit: sideUnitTotal(expenses),
+    totalExpenseGst:  sideGstTotal(expenses),
+    totalRevenueUnit: sideUnitTotal(revenues),
+    totalRevenueGst:  sideGstTotal(revenues),
     netPL: totalRevenue - totalExpenses,
   };
 };
 
-// Validates + sanitizes an incoming group array — strips anything
-// that isn't label/expandable/items, coerces amount to a number,
-// and drops empty labels.
+// Validates + sanitizes an incoming group array — strips anything that
+// isn't label/expandable/items, and recalculates gstAmount/finalAmount
+// server-side from unitPrice + gstPercent (never trusts whatever the
+// client sent for those two derived fields).
 const sanitizeGroups = (groups = [], sideName) => {
   if (!Array.isArray(groups)) {
     throw Object.assign(new Error(`${sideName} must be an array of groups.`), { status: 400 });
@@ -44,7 +69,7 @@ const sanitizeGroups = (groups = [], sideName) => {
         if (!it.label?.trim()) {
           throw Object.assign(new Error(`Every ${sideName} item needs a label.`), { status: 400 });
         }
-        return { label: it.label.trim(), amount: Number(it.amount) || 0 };
+        return { label: it.label.trim(), ...calcSubItem(it.unitPrice, it.gstPercent) };
       }),
     };
   });
@@ -134,13 +159,13 @@ export const updatePLStatement = async (req, res) => {
 // reopen). action drives what changes:
 //   editGroupLabel   { groupId, label }
 //   editItemLabel    { groupId, itemId, label }
-//   editItemAmount   { groupId, itemId, amount }
-//   editSingleAmount { groupId, amount }   (non-expandable single-entry groups)
+//   editItemAmount   { groupId, itemId, unitPrice, gstPercent }
+//   editSingleAmount { groupId, unitPrice, gstPercent }   (non-expandable single-entry groups)
 //   deleteGroup      { groupId }
 //   deleteItem       { groupId, itemId }
 // ─────────────────────────────────────────────────────────────────
 export const patchPLRow = async (req, res) => {
-  const { side, action, groupId, itemId, label, amount } = req.body;
+  const { side, action, groupId, itemId, label, unitPrice, gstPercent } = req.body;
 
   if (!["expense", "revenue"].includes(side)) {
     return sendError(res, "side must be 'expense' or 'revenue'.");
@@ -160,12 +185,14 @@ export const patchPLRow = async (req, res) => {
       group.label = label.trim();
       break;
 
-    case "editSingleAmount":
+    case "editSingleAmount": {
       if (group.items.length !== 1) {
         return sendError(res, "editSingleAmount only applies to single-entry groups.");
       }
-      group.items[0].amount = Number(amount) || 0;
+      const calc = calcSubItem(unitPrice, gstPercent);
+      Object.assign(group.items[0], calc);
       break;
+    }
 
     case "editItemLabel": {
       const item = group.items.id(itemId);
@@ -178,7 +205,8 @@ export const patchPLRow = async (req, res) => {
     case "editItemAmount": {
       const item = group.items.id(itemId);
       if (!item) return sendError(res, "Item not found.", 404);
-      item.amount = Number(amount) || 0;
+      const calc = calcSubItem(unitPrice, gstPercent);
+      Object.assign(item, calc);
       break;
     }
 
