@@ -4,6 +4,9 @@ const ProductSchema = new mongoose.Schema(
   {
     name           : { type: String, required: true, trim: true },
     productCode    : { type: String, trim: true, default: "" },
+    
+    // 👉 NEW: HSN Code for tax classification
+    hsnCode        : { type: String, trim: true, default: "" },
 
     // ── NEW — what kind of product this is ───────────────────────────
     // "inventory" = bar/kitchen stock (Whiskey, Chicken)

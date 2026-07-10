@@ -6,15 +6,19 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 // ─────────────────────────────────────────────────────────────────
 const calculateItems = (items = []) => {
   const calculated = items.map((item) => {
-    const qty       = Number(item.qty) || 1;
-    const unitPrice = Number(item.unitPrice) || 0;
+    const qty        = Number(item.qty) || 1;
+    const unitPrice  = Number(item.unitPrice) || 0;
+    const discount   = Number(item.discount) || 0; // 👉 Extract discount
     const gstPercent = Number(item.gstPercent) || 0;
 
-    const amount    = qty * unitPrice;
-    const gstAmount = (amount * gstPercent) / 100;
-    const netAmount = amount + gstAmount;
+    // Apply discount BEFORE calculating GST (Standard practice)
+    const basePrice  = qty * unitPrice;
+    const amount     = Math.max(0, basePrice - discount); // Prevent negative amount
+    
+    const gstAmount  = (amount * gstPercent) / 100;
+    const netAmount  = amount + gstAmount;
 
-    return { ...item, qty, unitPrice, gstPercent, amount, gstAmount, netAmount };
+    return { ...item, qty, unitPrice, discount, gstPercent, amount, gstAmount, netAmount };
   });
 
   const subTotal   = calculated.reduce((s, i) => s + i.amount, 0);
@@ -188,6 +192,7 @@ export const getExpenseRegister = async (req, res) => {
         description:    "$items.description",
         qty:            "$items.qty",
         unitPrice:      "$items.unitPrice",
+        discount:       "$items.discount",  // 👉 Pass discount to the frontend
         amount:         "$items.amount",
         gstPercent:     "$items.gstPercent",
         gstAmount:      "$items.gstAmount",

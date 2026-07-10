@@ -14,7 +14,12 @@ export const getProducts = async (req, res) => {
   const filter = {};
   if (active !== undefined) filter.isActive = active === "true";
   if (subCategoryId)  filter.subCategoryId = subCategoryId;
-  if (search)         filter.name = { $regex: search, $options: "i" };
+  if (search) {
+    filter.$or = [
+      { name: { $regex: search, $options: "i" } },
+      { hsnCode: { $regex: search, $options: "i" } }
+    ];
+  }
   if (expenseType)    filter.expenseType = expenseType;  // ← one new line
 
   const products = await Product.find(filter).sort({ name: 1 }).lean();

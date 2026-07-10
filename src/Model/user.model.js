@@ -31,7 +31,7 @@ UserSchema.methods.generateAccessToken = function (sessionId) {
   return jwt.sign(
     { userId: this._id, tokenVersion: this.tokenVersion, sessionId },
     process.env.JWT_SECRET,
-    { expiresIn: "10m" }
+    { expiresIn: "10h" }  // ← already 10 hours
   );
 };
 
