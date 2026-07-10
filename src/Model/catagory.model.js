@@ -11,12 +11,6 @@ import mongoose from "mongoose";
 //
 //  level enum: "groupHead" | "group" | "main" | "sub" | "base"
 //
-//  Parent chain enforced:
-//    group's parent  → groupHead
-//    main's parent   → group
-//    sub's parent    → main
-//    base's parent   → sub
-//
 //  Denormalized ancestor fields allow full-path display without joins:
 //    groupHeadId / groupHeadName
 //    groupId     / groupName
@@ -26,7 +20,7 @@ import mongoose from "mongoose";
 //  path[] — materialized array of ancestor ids for subtree queries
 //  fullPath — "COGS › Food Cost › Kitchen › Non-Veg › Prawn"
 //
-//  categoryType — "standard" | "capex" (inherited from groupHead)
+//  section — optional P&L tag (bar / kitchen / admin …)
 // ─────────────────────────────────────────────────────────────────
 
 const CategorySchema = new mongoose.Schema(
@@ -67,17 +61,6 @@ const CategorySchema = new mongoose.Schema(
     // ── Full readable path ───────────────────────────────────────
     fullPath : { type: String, default: "" },
 
-    // ── Business fields ──────────────────────────────────────────
-    // categoryType is set on groupHead and cascades down automatically.
-    // "standard" = regular operating categories
-    // "capex"    = capital-expenditure categories
-    categoryType : {
-      type    : String,
-      enum    : ["standard", "capex"],
-      default : "standard",
-      index   : true,
-    },
-
     // section — optional P&L tag (bar / kitchen / admin …)
     // typically set on groupHead or group, cascades down
     section : { type: String, trim: true, default: "" },
@@ -94,7 +77,6 @@ const CategorySchema = new mongoose.Schema(
 CategorySchema.index({ level: 1, parentId: 1 });
 CategorySchema.index({ path: 1 });
 CategorySchema.index({ isActive: 1 });
-CategorySchema.index({ categoryType: 1, level: 1, isActive: 1 });
 CategorySchema.index({ groupHeadId: 1, level: 1 });
 CategorySchema.index({ groupId: 1, level: 1 });
 // Unique active name per parent
@@ -154,7 +136,6 @@ CategorySchema.statics.buildLineage = async function (level, parentId) {
       mainCategoryId: null,   mainCategoryName: "",
       subCategoryId: null,    subCategoryName: "",
       path: ancestorPath,
-      categoryType: parent.categoryType || "standard",
       section: parent.section || "",
     };
   }
@@ -167,7 +148,6 @@ CategorySchema.statics.buildLineage = async function (level, parentId) {
       mainCategoryId: null,   mainCategoryName: "",
       subCategoryId: null,    subCategoryName: "",
       path: ancestorPath,
-      categoryType: parent.categoryType || "standard",
       section: parent.section || "",
     };
   }
@@ -180,7 +160,6 @@ CategorySchema.statics.buildLineage = async function (level, parentId) {
       mainCategoryId: parent._id,   mainCategoryName: parent.name,
       subCategoryId: null,           subCategoryName: "",
       path: ancestorPath,
-      categoryType: parent.categoryType || "standard",
       section: parent.section || "",
     };
   }
@@ -193,7 +172,6 @@ CategorySchema.statics.buildLineage = async function (level, parentId) {
     mainCategoryId: parent.mainCategoryId, mainCategoryName: parent.mainCategoryName,
     subCategoryId: parent._id,             subCategoryName: parent.name,
     path: ancestorPath,
-    categoryType: parent.categoryType || "standard",
     section: parent.section || "",
   };
 };

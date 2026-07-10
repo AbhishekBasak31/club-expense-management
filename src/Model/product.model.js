@@ -15,7 +15,7 @@ const ProductSchema = new mongoose.Schema(
     // Defaults to "inventory" so all existing records are unaffected
     expenseType : {
       type    : String,
-      enum    : ["inventory", "variable", "capital"],
+      enum    : ["fixed", "variable", "capital"],
       default : "inventory",
       index   : true,
     },

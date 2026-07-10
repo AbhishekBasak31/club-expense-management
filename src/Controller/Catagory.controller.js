@@ -7,7 +7,7 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 // Lineage (ancestors, path, fullPath) is built automatically.
 // ─────────────────────────────────────────────────────────────────
 export const createCategory = async (req, res) => {
-  const { name, level, parentId, section, sortOrder, categoryType } = req.body;
+  const { name, level, parentId, section, sortOrder } = req.body;
 
   if (!name?.trim()) return sendError(res, "Category name is required.");
   const VALID_LEVELS = ["groupHead", "group", "main", "sub", "base"];
@@ -22,10 +22,6 @@ export const createCategory = async (req, res) => {
     name: name.trim(),
     level,
     sortOrder: sortOrder || 0,
-    categoryType:
-      level === "groupHead"
-        ? categoryType || "standard"
-        : lineage.categoryType || "standard",
     section:
       level === "groupHead" || level === "group"
         ? section || ""
@@ -42,7 +38,7 @@ export const createCategory = async (req, res) => {
 // LIST
 // ─────────────────────────────────────────────────────────────────
 export const getCategories = async (req, res) => {
-  const { level, parentId, groupHeadId, groupId, mainCategoryId, section, active, categoryType } = req.query;
+  const { level, parentId, groupHeadId, groupId, mainCategoryId, section, active } = req.query;
 
   const filter = {};
   if (level)          filter.level = level;
@@ -52,16 +48,6 @@ export const getCategories = async (req, res) => {
   if (mainCategoryId) filter.mainCategoryId = mainCategoryId;
   if (section)        filter.section = section;
   if (active !== undefined) filter.isActive = active === "true";
-
-  if (categoryType === "capex") {
-    filter.categoryType = "capex";
-  } else if (categoryType === "standard") {
-    filter.$or = [
-      { categoryType: "standard" },
-      { categoryType: { $exists: false } },
-      { categoryType: null },
-    ];
-  }
 
   const categories = await Category.find(filter)
     .sort({ sortOrder: 1, name: 1 })
@@ -132,7 +118,7 @@ export const getCategoryById = async (req, res) => {
 // UPDATE
 // ─────────────────────────────────────────────────────────────────
 export const updateCategory = async (req, res) => {
-  const { name, section, sortOrder } = req.body;
+  const { name, section, sortOrder, isActive } = req.body;
 
   const category = await Category.findById(req.params.id);
   if (!category) return sendError(res, "Category not found.", 404);
@@ -141,6 +127,7 @@ export const updateCategory = async (req, res) => {
   if (name)                    category.name = name.trim();
   if (sortOrder !== undefined) category.sortOrder = sortOrder;
   if (section !== undefined)   category.section = section;
+  if (isActive !== undefined)  category.isActive = isActive;
 
   category.fullPath = category.buildFullPath();
   await category.save();
@@ -160,6 +147,15 @@ export const updateCategory = async (req, res) => {
 
   if (section !== undefined) {
     await Category.updateMany({ path: category._id }, { section });
+  }
+
+  // If deactivating, cascade to all descendants
+  if (isActive === false) {
+    await Category.updateMany({ path: category._id }, { isActive: false });
+  }
+  // If reactivating, cascade to all descendants
+  if (isActive === true) {
+    await Category.updateMany({ path: category._id }, { isActive: true });
   }
 
   return sendSuccess(res, category, "Category updated.");
@@ -234,7 +230,6 @@ export const relinkToGroup = async (req, res) => {
       main.groupHeadId   = group.groupHeadId;
       main.groupHeadName = group.groupHeadName;
       main.path          = newPath;
-      main.categoryType  = group.categoryType || "standard";
       if (!main.section) main.section = group.section || "";
       main.fullPath = [group.groupHeadName, group.name, main.name]
         .filter(Boolean).join(" › ");
@@ -251,7 +246,6 @@ export const relinkToGroup = async (req, res) => {
             groupName     : group.name,
             groupHeadId   : group.groupHeadId,
             groupHeadName : group.groupHeadName,
-            categoryType  : group.categoryType || "standard",
           },
         }
       );
