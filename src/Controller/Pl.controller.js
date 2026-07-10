@@ -1,4 +1,4 @@
-import { PLStatement } from "../Model/PL.model.js";
+import { PLStatement } from "../Model/Pl.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
 // ─────────────────────────────────────────────────────────────────
