@@ -1,10 +1,23 @@
 import { Vendor } from "../Model/vendor.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js"
+
+// Normalizes array-type fields so a malformed payload (e.g. a stray string
+// instead of an array) doesn't throw a Mongoose cast error on save.
+// Existing scalar fields are left completely untouched.
+const normalizeArrayFields = (body) => {
+  const out = { ...body };
+  if (out.phones !== undefined && !Array.isArray(out.phones)) out.phones = [];
+  if (out.emails !== undefined && !Array.isArray(out.emails)) out.emails = [];
+  if (out.addresses !== undefined && !Array.isArray(out.addresses)) out.addresses = [];
+  if (out.contactPersons !== undefined && !Array.isArray(out.contactPersons)) out.contactPersons = [];
+  return out;
+};
+
 // CREATE
 export const createVendor = async (req, res) => {
   const { name } = req.body;
   if (!name?.trim()) return sendError(res, "Vendor name is required.");
-  const vendor = await Vendor.create(req.body);
+  const vendor = await Vendor.create(normalizeArrayFields(req.body));
   return sendSuccess(res, vendor, "Vendor created.", 201);
 };
 
@@ -30,7 +43,7 @@ export const getVendorById = async (req, res) => {
 export const updateVendor = async (req, res) => {
   const vendor = await Vendor.findByIdAndUpdate(
     req.params.id,
-    { $set: req.body },
+    { $set: normalizeArrayFields(req.body) },
     { new: true, runValidators: true }
   );
   if (!vendor) return sendError(res, "Vendor not found.", 404);
