@@ -4,12 +4,17 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js"
 // Normalizes array-type fields so a malformed payload (e.g. a stray string
 // instead of an array) doesn't throw a Mongoose cast error on save.
 // Existing scalar fields are left completely untouched.
+const ARRAY_FIELDS = [
+  "phones", "emails", "addresses", "contactPersons",
+  "whatsappNumbers", "websiteUrls", "facebookUrls", "instagramUrls", "twitterUrls",
+  "vendorCategories",
+];
+
 const normalizeArrayFields = (body) => {
   const out = { ...body };
-  if (out.phones !== undefined && !Array.isArray(out.phones)) out.phones = [];
-  if (out.emails !== undefined && !Array.isArray(out.emails)) out.emails = [];
-  if (out.addresses !== undefined && !Array.isArray(out.addresses)) out.addresses = [];
-  if (out.contactPersons !== undefined && !Array.isArray(out.contactPersons)) out.contactPersons = [];
+  ARRAY_FIELDS.forEach((field) => {
+    if (out[field] !== undefined && !Array.isArray(out[field])) out[field] = [];
+  });
   return out;
 };
 

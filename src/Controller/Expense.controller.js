@@ -1,4 +1,5 @@
 import { ExpenseEntry } from "../Model/Expense.modal.js";
+import { Product } from "../Model/product.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -7,18 +8,17 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 const calculateItems = (items = []) => {
   const calculated = items.map((item) => {
     const qty        = Number(item.qty) || 1;
-    const unitPrice  = Number(item.unitPrice) || 0;
-    const discount   = Number(item.discount) || 0; // 👉 Extract discount
-    const gstPercent = Number(item.gstPercent) || 0;
+    const unitPrice   = Number(item.unitPrice) || 0;
+    const gstPercent  = Number(item.gstPercent) || 0;
 
-    // Apply discount BEFORE calculating GST (Standard practice)
-    const basePrice  = qty * unitPrice;
-    const amount     = Math.max(0, basePrice - discount); // Prevent negative amount
-    
-    const gstAmount  = (amount * gstPercent) / 100;
-    const netAmount  = amount + gstAmount;
+    const gross     = qty * unitPrice;
+    // Discount is applied BEFORE GST — never let it exceed the gross amount.
+    const discount  = Math.min(Number(item.discount) || 0, gross);
+    const amount    = Math.max(0, gross - discount);
+    const gstAmount = (amount * gstPercent) / 100;
+    const netAmount = amount + gstAmount;
 
-    return { ...item, qty, unitPrice, discount, gstPercent, amount, gstAmount, netAmount };
+    return { ...item, qty, unitPrice, gstPercent, discount, amount, gstAmount, netAmount };
   });
 
   const subTotal   = calculated.reduce((s, i) => s + i.amount, 0);
@@ -32,6 +32,33 @@ const calculateItems = (items = []) => {
 const nextReference = async () => {
   const count = await ExpenseEntry.countDocuments();
   return `EXP-${String(count + 1).padStart(5, "0")}`;
+};
+
+// ─────────────────────────────────────────────────────────────────
+// HELPER — sync each item's price onto any matching Product's
+// currentPrice. Match is by name only (case-insensitive), since expense
+// items store description as free text rather than a linked productId.
+// "Last save wins" — no date comparison, whatever was most recently
+// saved simply overwrites currentPrice/lastPriceDate.
+// Deliberately best-effort: a failure here must never block or fail the
+// expense save itself, so every error is caught and swallowed.
+// ─────────────────────────────────────────────────────────────────
+const syncProductCurrentPrice = async (items = []) => {
+  await Promise.all(
+    items.map(async (item) => {
+      const description = (item.description || "").trim();
+      const unitPrice = Number(item.unitPrice);
+      if (!description || !Number.isFinite(unitPrice)) return;
+      try {
+        await Product.updateMany(
+          { name: { $regex: `^${description.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
+          { $set: { currentPrice: unitPrice, lastPriceDate: new Date() } }
+        );
+      } catch {
+        // best-effort — never let a price-sync failure fail the expense save
+      }
+    })
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -60,6 +87,8 @@ export const createExpense = async (req, res) => {
     notes: notes || "",
     createdBy: req.user.userId,
   });
+
+  await syncProductCurrentPrice(calculated);
 
   return sendSuccess(res, entry, "Expense entry created.", 201);
 };
@@ -124,7 +153,40 @@ export const updateExpense = async (req, res) => {
   if (notes !== undefined) entry.notes = notes;
 
   await entry.save();
+
+  if (items) {
+    await syncProductCurrentPrice(entry.items);
+  }
+
   return sendSuccess(res, entry, "Expense entry updated.");
+};
+
+// ─────────────────────────────────────────────────────────────────
+// VERIFY — sets verificationStatus on one item within an entry.
+// verifiedBy is NOT taken from the request body — until RBAC exists,
+// every verification is attributed to "Admin" server-side, so a client
+// can never spoof who verified something.
+// ─────────────────────────────────────────────────────────────────
+export const verifyExpenseItem = async (req, res) => {
+  const { id, itemId } = req.params;
+  const { status } = req.body; // "verified" | "rejected" | "pending"
+
+  if (!["pending", "verified", "rejected"].includes(status)) {
+    return sendError(res, "Invalid verification status.");
+  }
+
+  const entry = await ExpenseEntry.findById(id);
+  if (!entry) return sendError(res, "Expense entry not found.", 404);
+
+  const item = entry.items.id(itemId);
+  if (!item) return sendError(res, "Expense item not found.", 404);
+
+  item.verificationStatus = status;
+  item.verifiedBy = status === "pending" ? "" : "Admin"; // TODO: real user once RBAC lands
+  item.verifiedAt = status === "pending" ? null : new Date();
+
+  await entry.save();
+  return sendSuccess(res, entry, "Verification status updated.");
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -183,23 +245,31 @@ export const getExpenseRegister = async (req, res) => {
     { $sort: { date: -1 } },
     { $project: {
         _id: 0,
-        entryId:        "$_id",
-        date:           1,
-        referenceNumber:1,
-        expenseType:    "$items.expenseType",
-        categoryName:   "$items.categoryName",
-        subCategoryName:"$items.subCategoryName",
-        description:    "$items.description",
-        qty:            "$items.qty",
-        unitPrice:      "$items.unitPrice",
-        discount:       "$items.discount",  // 👉 Pass discount to the frontend
-        amount:         "$items.amount",
-        gstPercent:     "$items.gstPercent",
-        gstAmount:      "$items.gstAmount",
-        netAmount:      "$items.netAmount",
-        vendorName:     "$items.vendorName",
-        paymentMode:    "$items.paymentMode",
-        billNo:         "$items.billNo",
+        entryId:          "$_id",
+        itemId:           "$items._id",
+        date:             1,
+        referenceNumber:  1,
+        expenseType:      "$items.expenseType",
+        groupHeadName:    "$items.groupHeadName",
+        groupName:        "$items.groupName",
+        categoryName:     "$items.categoryName",
+        subCategoryName:  "$items.subCategoryName",
+        baseCategoryName: "$items.baseCategoryName",
+        description:      "$items.description",
+        qty:              "$items.qty",
+        unitPrice:        "$items.unitPrice",
+        discount:         "$items.discount",
+        amount:           "$items.amount",
+        gstPercent:       "$items.gstPercent",
+        gstAmount:        "$items.gstAmount",
+        netAmount:        "$items.netAmount",
+        hsnSac:           "$items.hsnSac",
+        vendorName:       "$items.vendorName",
+        paymentMode:      "$items.paymentMode",
+        billNo:           "$items.billNo",
+        remarks:          "$items.remarks",
+        verificationStatus: "$items.verificationStatus",
+        verifiedBy:         "$items.verifiedBy",
     }},
   );
 

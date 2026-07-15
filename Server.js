@@ -16,6 +16,7 @@ import { errorHandler, notFound } from "./src/Middleware/Error.middleware.js";
 // ── Module routers ───────────────────────────────────────────────
 import AuthRouter       from "./src/Routers/User.routes.js";
 import VendorRouter     from "./src/Routers/Vendor.routes.js";
+import BrandRouter      from "./src/Routers/Brand.routes.js";
 import CategoryRouter   from "./src/Routers/Catagory.routes.js";
 import ProductRouter    from "./src/Routers/Product.routes.js";
 import UOMRouter        from "./src/Routers/Uom.routes.js";
@@ -85,6 +86,7 @@ app.get("/api/health", (req, res) =>
 // ── API routes ───────────────────────────────────────────────────
 app.use("/api/v1/auth",                AuthRouter);
 app.use("/api/v1/vendors",             VendorRouter);
+app.use("/api/v1/brands",              BrandRouter);
 app.use("/api/v1/categories",          CategoryRouter);
 app.use("/api/v1/products",            ProductRouter);
 app.use("/api/v1/uoms",                UOMRouter);
@@ -100,7 +102,7 @@ DB_Connection(process.env.DB_URL, process.env.DB_NAME)
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📋 Modules: auth, vendors, categories, products, uoms, product-conversions, expenses`);
+      console.log(`📋 Modules: auth, vendors, brands, categories, products, uoms, product-conversions, expenses`);
     });
   })
   .catch((err) => {
