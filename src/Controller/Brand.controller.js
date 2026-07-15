@@ -1,4 +1,4 @@
-import { Brand } from "../Model/brand.model.js";
+import { Brand } from "../Model/Brand.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
 // CREATE
