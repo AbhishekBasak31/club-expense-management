@@ -65,22 +65,30 @@ const syncProductCurrentPrice = async (items = []) => {
 // CREATE
 // ─────────────────────────────────────────────────────────────────
 export const createExpense = async (req, res) => {
-  const { date, items, notes } = req.body;
+  const { date, items, notes, status } = req.body;
+  const entryStatus = status === "draft" ? "draft" : "final";
 
   if (!date) return sendError(res, "Date is required.");
   if (!Array.isArray(items) || items.length === 0)
     return sendError(res, "At least one expense item is required.");
 
-  // Validate each item has required fields
-  for (const item of items) {
-    if (!item.expenseType || !item.description || item.unitPrice == null)
-      return sendError(res, "Each item needs expenseType, description and unitPrice.");
+  if (entryStatus === "draft") {
+    // Drafts: only require each item to have some description text.
+    if (!items.some((item) => (item.description || "").trim()))
+      return sendError(res, "At least one item needs a description.");
+  } else {
+    // Final entries: full validation, same as before.
+    for (const item of items) {
+      if (!item.expenseType || !item.description || item.unitPrice == null)
+        return sendError(res, "Each item needs expenseType, description and unitPrice.");
+    }
   }
 
   const { calculated, subTotal, totalGST, grandTotal } = calculateItems(items);
 
   const entry = await ExpenseEntry.create({
     date,
+    status: entryStatus,
     referenceNumber: await nextReference(),
     items: calculated,
     subTotal, totalGST, grandTotal,
@@ -88,16 +96,21 @@ export const createExpense = async (req, res) => {
     createdBy: req.user.userId,
   });
 
-  await syncProductCurrentPrice(calculated);
+  // Draft entries are incomplete by definition — skip product price sync
+  // until the entry is finalized, so a half-filled draft can't overwrite
+  // a product's currentPrice with a placeholder/zero value.
+  if (entryStatus === "final") {
+    await syncProductCurrentPrice(calculated);
+  }
 
-  return sendSuccess(res, entry, "Expense entry created.", 201);
+  return sendSuccess(res, entry, entryStatus === "draft" ? "Draft saved." : "Expense entry created.", 201);
 };
 
 // ─────────────────────────────────────────────────────────────────
 // LIST — with date range + expenseType filter + pagination
 // ─────────────────────────────────────────────────────────────────
 export const getExpenses = async (req, res) => {
-  const { from, to, expenseType, page = 1, limit = 50 } = req.query;
+  const { from, to, expenseType, status, page = 1, limit = 50 } = req.query;
   const filter = {};
 
   if (from && to) {
@@ -106,6 +119,13 @@ export const getExpenses = async (req, res) => {
   if (expenseType) {
     filter["items.expenseType"] = expenseType;
   }
+  // Default: only 'final' entries, so drafts don't silently appear in the
+  // normal list. Pass status=draft to fetch drafts, or status=all for both.
+  if (!status || status === "final") {
+    filter.status = "final";
+  } else if (status === "draft") {
+    filter.status = "draft";
+  } // status === 'all' → no status filter
 
   const pageNum  = Number(page);
   const limitNum = Number(limit);
@@ -137,12 +157,23 @@ export const getExpenseById = async (req, res) => {
 // UPDATE — recalculates totals
 // ─────────────────────────────────────────────────────────────────
 export const updateExpense = async (req, res) => {
-  const { date, items, notes } = req.body;
+  const { date, items, notes, status } = req.body;
 
   const entry = await ExpenseEntry.findById(req.params.id);
   if (!entry) return sendError(res, "Expense entry not found.", 404);
 
+  const resultingStatus = status === "draft" || status === "final" ? status : entry.status;
+
   if (items) {
+    if (resultingStatus === "final") {
+      for (const item of items) {
+        if (!item.expenseType || !item.description || item.unitPrice == null)
+          return sendError(res, "Each item needs expenseType, description and unitPrice.");
+      }
+    } else if (!items.some((item) => (item.description || "").trim())) {
+      return sendError(res, "At least one item needs a description.");
+    }
+
     const { calculated, subTotal, totalGST, grandTotal } = calculateItems(items);
     entry.items = calculated;
     entry.subTotal = subTotal;
@@ -151,14 +182,17 @@ export const updateExpense = async (req, res) => {
   }
   if (date) entry.date = date;
   if (notes !== undefined) entry.notes = notes;
+  entry.status = resultingStatus;
 
   await entry.save();
 
-  if (items) {
+  // Only sync product prices once the entry is (or becomes) final — a
+  // draft's prices may still be placeholders.
+  if (items && resultingStatus === "final") {
     await syncProductCurrentPrice(entry.items);
   }
 
-  return sendSuccess(res, entry, "Expense entry updated.");
+  return sendSuccess(res, entry, resultingStatus === "draft" ? "Draft updated." : "Expense entry updated.");
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -227,9 +261,14 @@ export const getExpenseSummary = async (req, res) => {
 // Supports date range + expenseType + category filters.
 // ─────────────────────────────────────────────────────────────────
 export const getExpenseRegister = async (req, res) => {
-  const { from, to, expenseType } = req.query;
+  const { from, to, expenseType, status } = req.query;
   const match = {};
   if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
+  if (!status || status === "final") {
+    match.status = "final";
+  } else if (status === "draft") {
+    match.status = "draft";
+  } // status === 'all' → no status filter
 
   const pipeline = [
     { $match: match },
@@ -249,6 +288,7 @@ export const getExpenseRegister = async (req, res) => {
         itemId:           "$items._id",
         date:             1,
         referenceNumber:  1,
+        status:           1,
         expenseType:      "$items.expenseType",
         groupHeadName:    "$items.groupHeadName",
         groupName:        "$items.groupName",
@@ -264,6 +304,8 @@ export const getExpenseRegister = async (req, res) => {
         gstAmount:        "$items.gstAmount",
         netAmount:        "$items.netAmount",
         hsnSac:           "$items.hsnSac",
+        uomId:            "$items.uomId",
+        uomName:          "$items.uomName",
         vendorName:       "$items.vendorName",
         paymentMode:      "$items.paymentMode",
         billNo:           "$items.billNo",

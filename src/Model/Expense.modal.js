@@ -3,7 +3,9 @@ import mongoose from "mongoose";
 // One line item within an expense entry
 const ExpenseItemSchema = new mongoose.Schema(
   {
-    expenseType     : { type: String, enum: ["fixed", "variable", "capex"], required: true },
+    // Not schema-required — drafts may omit these. The controller enforces
+    // "expenseType + unitPrice required" only for status:'final' entries.
+    expenseType     : { type: String, enum: ["fixed", "variable", "capex"], default: "variable" },
 
     // ── Group Head / Group — free-text labels only (e.g. "COGS", "Food Expense").
     // NOT linked to the Category collection — Category stays a strict
@@ -24,7 +26,7 @@ const ExpenseItemSchema = new mongoose.Schema(
 
     description     : { type: String, required: true, trim: true },
     qty             : { type: Number, default: 1 },
-    unitPrice       : { type: Number, required: true },
+    unitPrice       : { type: Number, default: 0 }, // not required — drafts may omit a price
     discount        : { type: Number, default: 0 }, // ₹ amount, applied before GST
 
     // server-calculated — never trusted from client
@@ -34,6 +36,9 @@ const ExpenseItemSchema = new mongoose.Schema(
     netAmount       : { type: Number, default: 0 }, // amount + gstAmount
 
     hsnSac          : { type: String, default: "" },
+
+    uomId           : { type: mongoose.Schema.Types.ObjectId, ref: "UOM", default: null },
+    uomName         : { type: String, default: "" },
 
     vendorId        : { type: mongoose.Schema.Types.ObjectId, ref: "Vendor", default: null },
     vendorName      : { type: String, default: "" },
@@ -64,6 +69,12 @@ const ExpenseEntrySchema = new mongoose.Schema(
   {
     date            : { type: Date, required: true, index: true },
     referenceNumber : { type: String, default: "" }, // auto: EXP-00001
+
+    // 'draft' = incomplete entry saved for later completion (e.g. products
+    // not yet in the Product master). 'final' = normal, complete expense.
+    // Defaults to 'final' so existing entries and any client that omits
+    // this field behave exactly as before.
+    status          : { type: String, enum: ["draft", "final"], default: "final", index: true },
 
     items           : [ExpenseItemSchema],
 
