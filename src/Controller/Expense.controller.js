@@ -5,7 +5,7 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 // ─────────────────────────────────────────────────────────────────
 // HELPER — recalculate all amounts server-side (never trust client)
 // ─────────────────────────────────────────────────────────────────
-const calculateItems = (items = []) => {
+const calculateItems = (items = [], deliveryCharge = 0, roundOff = 0) => {
   const calculated = items.map((item) => {
     const qty        = Number(item.qty) || 1;
     const unitPrice   = Number(item.unitPrice) || 0;
@@ -21,11 +21,13 @@ const calculateItems = (items = []) => {
     return { ...item, qty, unitPrice, gstPercent, discount, amount, gstAmount, netAmount };
   });
 
-  const subTotal   = calculated.reduce((s, i) => s + i.amount, 0);
-  const totalGST   = calculated.reduce((s, i) => s + i.gstAmount, 0);
-  const grandTotal = subTotal + totalGST;
+  const subTotal       = calculated.reduce((s, i) => s + i.amount, 0);
+  const totalGST        = calculated.reduce((s, i) => s + i.gstAmount, 0);
+  const deliveryChargeN = Number(deliveryCharge) || 0; // flat amount, no GST applied
+  const roundOffN       = Number(roundOff) || 0;       // +/- adjustment, applied last
+  const grandTotal      = subTotal + totalGST + deliveryChargeN + roundOffN;
 
-  return { calculated, subTotal, totalGST, grandTotal };
+  return { calculated, subTotal, totalGST, deliveryCharge: deliveryChargeN, roundOff: roundOffN, grandTotal };
 };
 
 // Generate next reference number: EXP-00001, EXP-00002...
@@ -65,7 +67,7 @@ const syncProductCurrentPrice = async (items = []) => {
 // CREATE
 // ─────────────────────────────────────────────────────────────────
 export const createExpense = async (req, res) => {
-  const { date, items, notes, status } = req.body;
+  const { date, items, notes, status, deliveryCharge, roundOff } = req.body;
   const entryStatus = status === "draft" ? "draft" : "final";
 
   if (!date) return sendError(res, "Date is required.");
@@ -84,14 +86,15 @@ export const createExpense = async (req, res) => {
     }
   }
 
-  const { calculated, subTotal, totalGST, grandTotal } = calculateItems(items);
+  const { calculated, subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal } =
+    calculateItems(items, deliveryCharge, roundOff);
 
   const entry = await ExpenseEntry.create({
     date,
     status: entryStatus,
     referenceNumber: await nextReference(),
     items: calculated,
-    subTotal, totalGST, grandTotal,
+    subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal,
     notes: notes || "",
     createdBy: req.user.userId,
   });
@@ -157,12 +160,14 @@ export const getExpenseById = async (req, res) => {
 // UPDATE — recalculates totals
 // ─────────────────────────────────────────────────────────────────
 export const updateExpense = async (req, res) => {
-  const { date, items, notes, status } = req.body;
+  const { date, items, notes, status, deliveryCharge, roundOff } = req.body;
 
   const entry = await ExpenseEntry.findById(req.params.id);
   if (!entry) return sendError(res, "Expense entry not found.", 404);
 
   const resultingStatus = status === "draft" || status === "final" ? status : entry.status;
+  const nextDeliveryCharge = deliveryCharge !== undefined ? deliveryCharge : entry.deliveryCharge;
+  const nextRoundOff       = roundOff !== undefined ? roundOff : entry.roundOff;
 
   if (items) {
     if (resultingStatus === "final") {
@@ -174,10 +179,21 @@ export const updateExpense = async (req, res) => {
       return sendError(res, "At least one item needs a description.");
     }
 
-    const { calculated, subTotal, totalGST, grandTotal } = calculateItems(items);
+    const { calculated, subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal } =
+      calculateItems(items, nextDeliveryCharge, nextRoundOff);
     entry.items = calculated;
     entry.subTotal = subTotal;
     entry.totalGST = totalGST;
+    entry.deliveryCharge = dc;
+    entry.roundOff = ro;
+    entry.grandTotal = grandTotal;
+  } else if (deliveryCharge !== undefined || roundOff !== undefined) {
+    // Delivery charge / round off changed without touching items — still
+    // needs to recalculate grandTotal from the existing item totals.
+    const { deliveryCharge: dc, roundOff: ro, grandTotal } =
+      calculateItems(entry.items, nextDeliveryCharge, nextRoundOff);
+    entry.deliveryCharge = dc;
+    entry.roundOff = ro;
     entry.grandTotal = grandTotal;
   }
   if (date) entry.date = date;

@@ -81,7 +81,9 @@ const ExpenseEntrySchema = new mongoose.Schema(
     // entry-level totals — all server-calculated
     subTotal        : { type: Number, default: 0 },
     totalGST        : { type: Number, default: 0 },
-    grandTotal      : { type: Number, default: 0 },
+    deliveryCharge  : { type: Number, default: 0 }, // flat amount, no GST — added straight to grandTotal
+    roundOff        : { type: Number, default: 0 }, // +/- adjustment applied last, after delivery charge
+    grandTotal      : { type: Number, default: 0 }, // subTotal + totalGST + deliveryCharge + roundOff
 
     notes           : { type: String, default: "" },
     createdBy       : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

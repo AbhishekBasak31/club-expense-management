@@ -4,6 +4,7 @@ const ProductSchema = new mongoose.Schema(
   {
     name           : { type: String, required: true, trim: true },
     productCode    : { type: String, trim: true, default: "" },
+    hsnCode        : { type: String, trim: true, default: "" }, // HSN/SAC code for GST filing
 
     // ── Brand — lets the same product name be tracked separately per
     // brand (e.g. two different "Whiskey" purchases from different
@@ -31,6 +32,7 @@ const ProductSchema = new mongoose.Schema(
     // denormalized names for fast display without populate
     mainCategoryName : { type: String, default: "" },
     subCategoryName  : { type: String, default: "" },
+    baseCategoryName : { type: String, default: "" },
 
     uomId          : { type: mongoose.Schema.Types.ObjectId, ref: "UOM", default: null },
     uomName        : { type: String, default: "" },
