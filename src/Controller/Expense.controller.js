@@ -7,6 +7,43 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 // ─────────────────────────────────────────────────────────────────
 const calculateItems = (items = [], deliveryCharge = 0, roundOff = 0) => {
   const calculated = items.map((item) => {
+    // ── Employee salary items compute their net salary from the
+    // salaryDetails sub-fields, then that net salary becomes the item's
+    // unitPrice/amount so it flows through GST/totals like any other
+    // expense line (salary itself has qty=1, no GST). ──
+    if (item.isSalary && item.salaryDetails) {
+      const sd = item.salaryDetails;
+      const baseSalary = Number(sd.baseSalary) || 0;
+      const pfPercent  = Number(sd.pfPercent) || 0;
+      const hraPercent = Number(sd.hraPercent) || 0;
+      const pfAmount   = (baseSalary * pfPercent) / 100;
+      const hraAmount  = (baseSalary * hraPercent) / 100;
+
+      const daAmount = sd.daType === "percent"
+        ? (baseSalary * (Number(sd.daValue) || 0)) / 100
+        : (Number(sd.daValue) || 0);
+
+      const incentiveAmount = sd.incentiveType === "percent"
+        ? (baseSalary * (Number(sd.incentiveValue) || 0)) / 100
+        : (Number(sd.incentiveValue) || 0);
+
+      const travelAllowanceAmount = Number(sd.travelAllowanceAmount) || 0;
+
+      const netSalary = baseSalary + hraAmount + daAmount + travelAllowanceAmount + incentiveAmount - pfAmount;
+
+      const resolvedSalaryDetails = {
+        ...sd, baseSalary, pfPercent, pfAmount, hraPercent, hraAmount,
+        daAmount, travelAllowanceAmount, incentiveAmount, netSalary,
+      };
+
+      return {
+        ...item,
+        qty: 1, unitPrice: netSalary, discount: 0,
+        amount: netSalary, gstPercent: 0, gstAmount: 0, netAmount: netSalary,
+        salaryDetails: resolvedSalaryDetails,
+      };
+    }
+
     const qty        = Number(item.qty) || 1;
     const unitPrice   = Number(item.unitPrice) || 0;
     const gstPercent  = Number(item.gstPercent) || 0;
@@ -344,4 +381,38 @@ export const getExpenseRegister = async (req, res) => {
   );
 
   return sendSuccess(res, { rows, totals, count: rows.length });
+};
+
+
+export const getExpenseReport = async (req, res) => {
+  try {
+    const { startDate, endDate, category, vendor, department } = req.query;
+    
+    // Build the query object dynamically
+    let query = {};
+
+    // 1. Bar vs Kitchen Toggle
+    if (department) {
+      // Assuming 'department' is how you separate Alcohol vs Normal
+      query.department = department; 
+    }
+
+    // 2. Date Filter
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+
+    // 3. Category & Vendor Filters
+    if (category) query.category = category;
+    if (vendor) query.vendor = vendor;
+
+    // Fetch and sort (maintaining category-wise order as requested)
+    const expenses = await Expense.find(query).sort({ category: 1, date: -1 });
+
+    res.status(200).json({ success: true, data: expenses });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 };

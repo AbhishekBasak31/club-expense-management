@@ -61,6 +61,57 @@ const ExpenseItemSchema = new mongoose.Schema(
     verificationStatus : { type: String, enum: ["pending", "verified", "rejected"], default: "pending" },
     verifiedBy         : { type: String, default: "" },
     verifiedAt         : { type: Date, default: null },
+
+    // ── Employee salary details — only populated when the "Employee
+    // salary" checkbox is used on the Add Expense form (expenseType is
+    // still "fixed" as normal; isSalary distinguishes a salary line from
+    // any other fixed/operating-cost item). All money fields here are
+    // in addition to, not instead of, the item's own unitPrice/amount/
+    // netAmount — those still hold the net salary total actually paid,
+    // so this entry behaves like any other expense item everywhere else
+    // (dashboards, exports, reports) without special-casing. ──
+    isSalary        : { type: Boolean, default: false },
+    salaryDetails    : {
+      employeeId      : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
+      empId           : { type: String, default: "" },       // denormalized
+      employeeName    : { type: String, default: "" },       // denormalized
+      designation     : { type: String, default: "" },
+      dateOfBirth     : { type: Date, default: null },
+      bloodGroup      : { type: String, default: "" },
+      mobileNumber    : { type: String, default: "" },
+      email           : { type: String, default: "" },
+
+      salaryMonth     : { type: String, default: "" },        // "2026-07" style year-month
+
+      baseSalary      : { type: Number, default: 0 },
+      pfPercent       : { type: Number, default: 12 },         // editable — no fixed statutory rate assumed
+      pfAmount        : { type: Number, default: 0 },          // server-calculated: baseSalary × pfPercent/100
+      hraPercent      : { type: Number, default: 40 },         // editable — no fixed statutory rate assumed
+      hraAmount       : { type: Number, default: 0 },           // server-calculated: baseSalary × hraPercent/100
+
+      // DA — either a flat amount or a percentage of base salary, per entry
+      daType          : { type: String, enum: ["amount", "percent"], default: "amount" },
+      daValue         : { type: Number, default: 0 },            // the number entered — amount or percent per daType
+      daAmount        : { type: Number, default: 0 },              // server-calculated resolved ₹ amount
+
+      travelAllowanceId   : { type: mongoose.Schema.Types.ObjectId, ref: "TravelAllowance", default: null },
+      travelAllowanceName : { type: String, default: "" },
+      travelAllowanceAmount : { type: Number, default: 0 },
+
+      // Incentive — either a flat amount or a percentage of base salary
+      incentiveType   : { type: String, enum: ["amount", "percent"], default: "amount" },
+      incentiveValue  : { type: Number, default: 0 },
+      incentiveAmount : { type: Number, default: 0 }, // server-calculated resolved ₹ amount
+
+      attendanceDays  : { type: Number, default: 0 },
+      paidLeaveDays   : { type: Number, default: 0 },
+      holidayDays     : { type: Number, default: 0 },
+
+      // netSalary is server-calculated: baseSalary + hraAmount + daAmount +
+      // travelAllowanceAmount + incentiveAmount − pfAmount. Stored so it's
+      // queryable/reportable without recomputing from the components.
+      netSalary       : { type: Number, default: 0 },
+    },
   },
   { _id: true }
 );
@@ -97,6 +148,7 @@ ExpenseEntrySchema.index({ "items.groupHeadName": 1 });
 ExpenseEntrySchema.index({ "items.groupName": 1 });
 ExpenseEntrySchema.index({ "items.expenseType": 1 });
 ExpenseEntrySchema.index({ "items.verificationStatus": 1 });
+ExpenseEntrySchema.index({ "items.isSalary": 1 });
 
 export const ExpenseEntry = mongoose.model("ExpenseEntry", ExpenseEntrySchema);
 export default ExpenseEntry;
