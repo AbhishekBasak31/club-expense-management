@@ -382,3 +382,37 @@ export const getExpenseRegister = async (req, res) => {
 
   return sendSuccess(res, { rows, totals, count: rows.length });
 };
+
+
+export const getExpenseReport = async (req, res) => {
+  try {
+    const { startDate, endDate, category, vendor, department } = req.query;
+    
+    // Build the query object dynamically
+    let query = {};
+
+    // 1. Bar vs Kitchen Toggle
+    if (department) {
+      // Assuming 'department' is how you separate Alcohol vs Normal
+      query.department = department; 
+    }
+
+    // 2. Date Filter
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+
+    // 3. Category & Vendor Filters
+    if (category) query.category = category;
+    if (vendor) query.vendor = vendor;
+
+    // Fetch and sort (maintaining category-wise order as requested)
+    const expenses = await Expense.find(query).sort({ category: 1, date: -1 });
+
+    res.status(200).json({ success: true, data: expenses });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
