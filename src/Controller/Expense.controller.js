@@ -7,6 +7,43 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 // ─────────────────────────────────────────────────────────────────
 const calculateItems = (items = [], deliveryCharge = 0, roundOff = 0) => {
   const calculated = items.map((item) => {
+    // ── Employee salary items compute their net salary from the
+    // salaryDetails sub-fields, then that net salary becomes the item's
+    // unitPrice/amount so it flows through GST/totals like any other
+    // expense line (salary itself has qty=1, no GST). ──
+    if (item.isSalary && item.salaryDetails) {
+      const sd = item.salaryDetails;
+      const baseSalary = Number(sd.baseSalary) || 0;
+      const pfPercent  = Number(sd.pfPercent) || 0;
+      const hraPercent = Number(sd.hraPercent) || 0;
+      const pfAmount   = (baseSalary * pfPercent) / 100;
+      const hraAmount  = (baseSalary * hraPercent) / 100;
+
+      const daAmount = sd.daType === "percent"
+        ? (baseSalary * (Number(sd.daValue) || 0)) / 100
+        : (Number(sd.daValue) || 0);
+
+      const incentiveAmount = sd.incentiveType === "percent"
+        ? (baseSalary * (Number(sd.incentiveValue) || 0)) / 100
+        : (Number(sd.incentiveValue) || 0);
+
+      const travelAllowanceAmount = Number(sd.travelAllowanceAmount) || 0;
+
+      const netSalary = baseSalary + hraAmount + daAmount + travelAllowanceAmount + incentiveAmount - pfAmount;
+
+      const resolvedSalaryDetails = {
+        ...sd, baseSalary, pfPercent, pfAmount, hraPercent, hraAmount,
+        daAmount, travelAllowanceAmount, incentiveAmount, netSalary,
+      };
+
+      return {
+        ...item,
+        qty: 1, unitPrice: netSalary, discount: 0,
+        amount: netSalary, gstPercent: 0, gstAmount: 0, netAmount: netSalary,
+        salaryDetails: resolvedSalaryDetails,
+      };
+    }
+
     const qty        = Number(item.qty) || 1;
     const unitPrice   = Number(item.unitPrice) || 0;
     const gstPercent  = Number(item.gstPercent) || 0;

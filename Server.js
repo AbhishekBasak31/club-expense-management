@@ -23,6 +23,9 @@ import UOMRouter        from "./src/Routers/Uom.routes.js";
 import ConversionRouter from "./src/Routers/ProductConversion.routes.js";
 import ExpenseRouter    from "./src/Routers/Expense.routes.js";
 import PLRouter         from "./src/Routers/Pl.router.js";
+import EmployeeRouter   from "./src/Routers/Employee.routes.js";
+import TravelAllowanceRouter   from "./src/Routers/Travelallowence.routes.js";
+
 const app  = express();
 const PORT = process.env.PORT || 7000;
 
@@ -93,6 +96,11 @@ app.use("/api/v1/uoms",                UOMRouter);
 app.use("/api/v1/product-conversions", ConversionRouter);
 app.use("/api/v1/expenses",            ExpenseRouter);
 app.use("/api/v1/pl-statements",       PLRouter);
+app.use("/api/v1/employees",       EmployeeRouter);
+app.use("/api/v1/travel-allowances",  TravelAllowanceRouter);
+
+
+
 // ── Error handling (must be last) ────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);
