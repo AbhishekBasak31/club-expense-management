@@ -71,4 +71,4 @@ export const deleteEmployee = async (req, res) => {
   const employee = await Employee.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
   if (!employee) return sendError(res, "Employee not found.", 404);
   return sendSuccess(res, null, "Employee deactivated.");
-};
+};  

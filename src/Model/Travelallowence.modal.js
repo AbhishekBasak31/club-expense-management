@@ -13,4 +13,4 @@ TravelAllowanceSchema.index({ name: 1 });
 TravelAllowanceSchema.index({ isActive: 1 });
 
 export const TravelAllowance = mongoose.model("TravelAllowance", TravelAllowanceSchema);
-export default TravelAllowance;
+export default TravelAllowance; 

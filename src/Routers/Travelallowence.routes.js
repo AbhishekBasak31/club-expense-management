@@ -15,4 +15,4 @@ TravelAllowanceRouter.get   ("/:id", asyncHandler(getTravelAllowanceById));
 TravelAllowanceRouter.put   ("/:id", asyncHandler(updateTravelAllowance));
 TravelAllowanceRouter.delete("/:id", asyncHandler(deleteTravelAllowance));
 
-export default TravelAllowanceRouter;
+export default TravelAllowanceRouter; 

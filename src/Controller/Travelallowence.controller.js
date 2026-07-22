@@ -6,7 +6,7 @@ export const createTravelAllowance = async (req, res) => {
   if (!name?.trim()) return sendError(res, "Name is required.");
   const item = await TravelAllowance.create(req.body);
   return sendSuccess(res, item, "Travel allowance created.", 201);
-};
+};  
 
 export const getTravelAllowances = async (req, res) => {
   const { search, active } = req.query;

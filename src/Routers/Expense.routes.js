@@ -17,7 +17,7 @@ router.get("/report",   asyncHandler(getExpenseReport));
 router.post  ("/",    asyncHandler(createExpense));
 router.get   ("/",    asyncHandler(getExpenses));
 router.get   ("/:id", asyncHandler(getExpenseById));
-router.put   ("/:id", asyncHandler(updateExpense));
+router.put   ("/:id", asyncHandler(updateExpense)); 
 router.delete("/:id", asyncHandler(deleteExpense));
 router.patch ("/:id/items/:itemId/verify", asyncHandler(verifyExpenseItem));
 

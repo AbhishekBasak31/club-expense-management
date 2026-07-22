@@ -151,4 +151,4 @@ ExpenseEntrySchema.index({ "items.verificationStatus": 1 });
 ExpenseEntrySchema.index({ "items.isSalary": 1 });
 
 export const ExpenseEntry = mongoose.model("ExpenseEntry", ExpenseEntrySchema);
-export default ExpenseEntry;
+export default ExpenseEntry; 

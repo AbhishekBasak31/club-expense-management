@@ -394,9 +394,9 @@ export const getExpenseReport = async (req, res) => {
     // 1. Bar vs Kitchen Toggle
     if (department) {
       // Assuming 'department' is how you separate Alcohol vs Normal
-      query.department = department; 
+      query.department = department;   
     }
-
+ 
     // 2. Date Filter
     if (startDate || endDate) {
       query.date = {};

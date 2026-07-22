@@ -33,4 +33,4 @@ EmployeeSchema.index({ name: 1 });
 EmployeeSchema.index({ isActive: 1 });
 
 export const Employee = mongoose.model("Employee", EmployeeSchema);
-export default Employee;
+export default Employee; 

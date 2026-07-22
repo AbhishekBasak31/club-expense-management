@@ -14,4 +14,4 @@ router.get   ("/:id", asyncHandler(getProductById));
 router.put   ("/:id", asyncHandler(updateProduct));
 router.delete("/:id", asyncHandler(deleteProduct));
 
-export default router;
+export default router; 
