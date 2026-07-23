@@ -11,36 +11,20 @@ const calculateItems = (items = [], deliveryCharge = 0, roundOff = 0) => {
     // salaryDetails sub-fields, then that net salary becomes the item's
     // unitPrice/amount so it flows through GST/totals like any other
     // expense line (salary itself has qty=1, no GST). ──
-    if (item.isSalary && item.salaryDetails) {
-      const sd = item.salaryDetails;
-      const baseSalary = Number(sd.baseSalary) || 0;
-      const pfPercent  = Number(sd.pfPercent) || 0;
-      const hraPercent = Number(sd.hraPercent) || 0;
-      const pfAmount   = (baseSalary * pfPercent) / 100;
-      const hraAmount  = (baseSalary * hraPercent) / 100;
+    if (item.isAllowance && item.allowanceDetails) {
+      const ad = item.allowanceDetails;
+      const amount     = Number(ad.amount) || 0;
+      const gstPercent = Number(ad.gstPercent) || 0;
+      const gstAmount  = (amount * gstPercent) / 100;
+      const netAmount  = amount + gstAmount;
 
-      const daAmount = sd.daType === "percent"
-        ? (baseSalary * (Number(sd.daValue) || 0)) / 100
-        : (Number(sd.daValue) || 0);
-
-      const incentiveAmount = sd.incentiveType === "percent"
-        ? (baseSalary * (Number(sd.incentiveValue) || 0)) / 100
-        : (Number(sd.incentiveValue) || 0);
-
-      const travelAllowanceAmount = Number(sd.travelAllowanceAmount) || 0;
-
-      const netSalary = baseSalary + hraAmount + daAmount + travelAllowanceAmount + incentiveAmount - pfAmount;
-
-      const resolvedSalaryDetails = {
-        ...sd, baseSalary, pfPercent, pfAmount, hraPercent, hraAmount,
-        daAmount, travelAllowanceAmount, incentiveAmount, netSalary,
-      };
+      const resolvedAllowanceDetails = { ...ad, amount, gstPercent, gstAmount, netAmount };
 
       return {
         ...item,
-        qty: 1, unitPrice: netSalary, discount: 0,
-        amount: netSalary, gstPercent: 0, gstAmount: 0, netAmount: netSalary,
-        salaryDetails: resolvedSalaryDetails,
+        qty: 1, unitPrice: amount, discount: 0,
+        amount, gstPercent, gstAmount, netAmount,
+        allowanceDetails: resolvedAllowanceDetails,
       };
     }
 
@@ -104,7 +88,7 @@ const syncProductCurrentPrice = async (items = []) => {
 // CREATE
 // ─────────────────────────────────────────────────────────────────
 export const createExpense = async (req, res) => {
-  const { date, items, notes, status, deliveryCharge, roundOff } = req.body;
+  const { date, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
   const entryStatus = status === "draft" ? "draft" : "final";
 
   if (!date) return sendError(res, "Date is required.");
@@ -133,6 +117,7 @@ export const createExpense = async (req, res) => {
     items: calculated,
     subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal,
     notes: notes || "",
+    addedBy: addedBy || "",
     createdBy: req.user.userId,
   });
 
@@ -197,7 +182,7 @@ export const getExpenseById = async (req, res) => {
 // UPDATE — recalculates totals
 // ─────────────────────────────────────────────────────────────────
 export const updateExpense = async (req, res) => {
-  const { date, items, notes, status, deliveryCharge, roundOff } = req.body;
+  const { date, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
 
   const entry = await ExpenseEntry.findById(req.params.id);
   if (!entry) return sendError(res, "Expense entry not found.", 404);
@@ -235,6 +220,7 @@ export const updateExpense = async (req, res) => {
   }
   if (date) entry.date = date;
   if (notes !== undefined) entry.notes = notes;
+  if (addedBy !== undefined) entry.addedBy = addedBy;
   entry.status = resultingStatus;
 
   await entry.save();
@@ -365,6 +351,8 @@ export const getExpenseRegister = async (req, res) => {
         remarks:          "$items.remarks",
         verificationStatus: "$items.verificationStatus",
         verifiedBy:         "$items.verifiedBy",
+        isVoucher:          "$items.isVoucher",
+        voucherFields:      "$items.voucherFields",
     }},
   );
 
@@ -382,7 +370,6 @@ export const getExpenseRegister = async (req, res) => {
 
   return sendSuccess(res, { rows, totals, count: rows.length });
 };
-
 
 export const getExpenseReport = async (req, res) => {
   try {

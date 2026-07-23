@@ -62,55 +62,57 @@ const ExpenseItemSchema = new mongoose.Schema(
     verifiedBy         : { type: String, default: "" },
     verifiedAt         : { type: Date, default: null },
 
-    // ── Employee salary details — only populated when the "Employee
-    // salary" checkbox is used on the Add Expense form (expenseType is
-    // still "fixed" as normal; isSalary distinguishes a salary line from
-    // any other fixed/operating-cost item). All money fields here are
+    // ── Universal voucher entry — a general free-form expense record
+    // (Particular, Debit, Credit, Approved By, Received By, Created By)
+    // used across many purposes: travel, corporate bills, medical/first-
+    // aid, sudden kitchen/bar purchases, local or online orders, cash
+    // deposits, repairs, etc. Set whenever the "Voucher entry" checkbox
+    // was used on the Add Expense form for this item. Deliberately not
+    // tied to any fixed set of categories, so it adapts to whatever a
+    // given restaurant/club actually uses vouchers for. ──
+    isVoucher     : { type: Boolean, default: false },
+    voucherFields : {
+      particular    : { type: String, default: "" },
+      debit         : { type: Number, default: 0 },
+      credit        : { type: Number, default: 0 },
+      approvedBy    : { type: String, default: "" },
+      receivedBy    : { type: String, default: "" },
+      createdById   : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
+      createdByName : { type: String, default: "" }, // denormalized
+    },
+
+    // ── Employee allowance details — only populated when the "Employee
+    // allowance" checkbox is used on the Add Expense form (expenseType is
+    // still "fixed" as normal; isAllowance distinguishes an allowance line
+    // from any other fixed/operating-cost item). amount/gstAmount here are
     // in addition to, not instead of, the item's own unitPrice/amount/
-    // netAmount — those still hold the net salary total actually paid,
-    // so this entry behaves like any other expense item everywhere else
+    // netAmount — those still hold the net total actually paid, so this
+    // entry behaves like any other expense item everywhere else
     // (dashboards, exports, reports) without special-casing. ──
-    isSalary        : { type: Boolean, default: false },
-    salaryDetails    : {
-      employeeId      : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
-      empId           : { type: String, default: "" },       // denormalized
-      employeeName    : { type: String, default: "" },       // denormalized
-      designation     : { type: String, default: "" },
-      dateOfBirth     : { type: Date, default: null },
-      bloodGroup      : { type: String, default: "" },
-      mobileNumber    : { type: String, default: "" },
-      email           : { type: String, default: "" },
+    isAllowance      : { type: Boolean, default: false },
+    allowanceDetails : {
+      employeeId    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
+      empId         : { type: String, default: "" },  // denormalized
+      employeeName  : { type: String, default: "" },  // denormalized
+      designation   : { type: String, default: "" },
+      dateOfBirth   : { type: Date, default: null },
+      bloodGroup    : { type: String, default: "" },
+      mobileNumber  : { type: String, default: "" },
+      email         : { type: String, default: "" },
 
-      salaryMonth     : { type: String, default: "" },        // "2026-07" style year-month
+      allowanceId   : { type: mongoose.Schema.Types.ObjectId, ref: "TravelAllowance", default: null },
+      allowanceName : { type: String, default: "" }, // denormalized
 
-      baseSalary      : { type: Number, default: 0 },
-      pfPercent       : { type: Number, default: 12 },         // editable — no fixed statutory rate assumed
-      pfAmount        : { type: Number, default: 0 },          // server-calculated: baseSalary × pfPercent/100
-      hraPercent      : { type: Number, default: 40 },         // editable — no fixed statutory rate assumed
-      hraAmount       : { type: Number, default: 0 },           // server-calculated: baseSalary × hraPercent/100
-
-      // DA — either a flat amount or a percentage of base salary, per entry
-      daType          : { type: String, enum: ["amount", "percent"], default: "amount" },
-      daValue         : { type: Number, default: 0 },            // the number entered — amount or percent per daType
-      daAmount        : { type: Number, default: 0 },              // server-calculated resolved ₹ amount
-
-      travelAllowanceId   : { type: mongoose.Schema.Types.ObjectId, ref: "TravelAllowance", default: null },
-      travelAllowanceName : { type: String, default: "" },
-      travelAllowanceAmount : { type: Number, default: 0 },
-
-      // Incentive — either a flat amount or a percentage of base salary
-      incentiveType   : { type: String, enum: ["amount", "percent"], default: "amount" },
-      incentiveValue  : { type: Number, default: 0 },
-      incentiveAmount : { type: Number, default: 0 }, // server-calculated resolved ₹ amount
-
-      attendanceDays  : { type: Number, default: 0 },
-      paidLeaveDays   : { type: Number, default: 0 },
-      holidayDays     : { type: Number, default: 0 },
-
-      // netSalary is server-calculated: baseSalary + hraAmount + daAmount +
-      // travelAllowanceAmount + incentiveAmount − pfAmount. Stored so it's
+      // amount defaults from the picked allowance's master amount on the
+      // frontend, but is freely editable to the real value — this field
+      // always holds whatever was actually entered, not necessarily the
+      // master's default.
+      amount        : { type: Number, default: 0 },
+      gstPercent    : { type: Number, default: 0 }, // manual entry, no master default
+      gstAmount     : { type: Number, default: 0 }, // server-calculated: amount × gstPercent/100
+      // netAmount is server-calculated: amount + gstAmount. Stored so it's
       // queryable/reportable without recomputing from the components.
-      netSalary       : { type: Number, default: 0 },
+      netAmount     : { type: Number, default: 0 },
     },
   },
   { _id: true }
@@ -138,6 +140,7 @@ const ExpenseEntrySchema = new mongoose.Schema(
 
     notes           : { type: String, default: "" },
     createdBy       : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    addedBy         : { type: String, default: "" }, // free-text name of the person who added this expense entry, typed on the Add Expense form
   },
   { timestamps: true }
 );
@@ -148,7 +151,8 @@ ExpenseEntrySchema.index({ "items.groupHeadName": 1 });
 ExpenseEntrySchema.index({ "items.groupName": 1 });
 ExpenseEntrySchema.index({ "items.expenseType": 1 });
 ExpenseEntrySchema.index({ "items.verificationStatus": 1 });
-ExpenseEntrySchema.index({ "items.isSalary": 1 });
+ExpenseEntrySchema.index({ "items.isAllowance": 1 });
+ExpenseEntrySchema.index({ "items.isVoucher": 1 });
 
 export const ExpenseEntry = mongoose.model("ExpenseEntry", ExpenseEntrySchema);
-export default ExpenseEntry; 
+export default ExpenseEntry;
