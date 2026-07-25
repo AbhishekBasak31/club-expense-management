@@ -48,11 +48,20 @@ const ExpenseItemSchema = new mongoose.Schema(
     receiptUrl      : { type: String, default: "" },
     remarks         : { type: String, default: "" },
 
-    // Free-form custom field — {label, value} pair entered on the form
+    // ── Legacy single custom field — no longer editable from the Add
+    // Expense form (the custom-columns feature was removed), kept only
+    // so any entry saved while it existed still reads back correctly. ──
     customField     : {
       label : { type: String, default: "" },
       value : { type: String, default: "" },
     },
+
+    // ── Expense Master link — the specific named expense type picked
+    // from ExpenseMaster.tsx (e.g. "Local Conveyance"), distinct from
+    // the Group Head→Base category chain above. Denormalized name for
+    // fast display without populate. ──
+    expenseMasterId   : { type: mongoose.Schema.Types.ObjectId, ref: "TravelAllowance", default: null },
+    expenseMasterName : { type: String, default: "" },
 
     // ── Verification — for now "verifiedBy" is always "Admin" since there's
     // no role-based access control yet to capture a real per-user identity.
@@ -69,26 +78,30 @@ const ExpenseItemSchema = new mongoose.Schema(
     // deposits, repairs, etc. Set whenever the "Voucher entry" checkbox
     // was used on the Add Expense form for this item. Deliberately not
     // tied to any fixed set of categories, so it adapts to whatever a
-    // given restaurant/club actually uses vouchers for. ──
+    // given restaurant/club actually uses vouchers for. Approved By /
+    // Received By / Created By are all Employee Master pickers. ──
     isVoucher     : { type: Boolean, default: false },
     voucherFields : {
-      particular    : { type: String, default: "" },
-      debit         : { type: Number, default: 0 },
-      credit        : { type: Number, default: 0 },
-      approvedBy    : { type: String, default: "" },
-      receivedBy    : { type: String, default: "" },
-      createdById   : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
-      createdByName : { type: String, default: "" }, // denormalized
+      particular      : { type: String, default: "" },
+      debit           : { type: Number, default: 0 },
+      credit          : { type: Number, default: 0 },
+      approvedById    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
+      approvedByName  : { type: String, default: "" }, // denormalized
+      receivedById    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
+      receivedByName  : { type: String, default: "" }, // denormalized
+      createdById     : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
+      createdByName   : { type: String, default: "" }, // denormalized
     },
 
-    // ── Employee allowance details — only populated when the "Employee
-    // allowance" checkbox is used on the Add Expense form (expenseType is
-    // still "fixed" as normal; isAllowance distinguishes an allowance line
-    // from any other fixed/operating-cost item). amount/gstAmount here are
-    // in addition to, not instead of, the item's own unitPrice/amount/
-    // netAmount — those still hold the net total actually paid, so this
-    // entry behaves like any other expense item everywhere else
-    // (dashboards, exports, reports) without special-casing. ──
+    // ── "To" — one or more employees this expense is actually paid to.
+    // With exactly one, isAllowance/allowanceDetails represents that
+    // person's full Debit; with more than one, the row's Debit is split
+    // equally and expands into one item PER recipient (each carrying
+    // that identical share). amount/gstAmount here are in addition to,
+    // not instead of, the item's own unitPrice/amount/netAmount — those
+    // still hold the net total actually paid, so this entry behaves like
+    // any other expense item everywhere else (dashboards, exports,
+    // reports) without special-casing. ──
     isAllowance      : { type: Boolean, default: false },
     allowanceDetails : {
       employeeId    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },

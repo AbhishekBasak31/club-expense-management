@@ -9,10 +9,13 @@ export const createTravelAllowance = async (req, res) => {
 };  
 
 export const getTravelAllowances = async (req, res) => {
-  const { search, active } = req.query;
+  // subCategoryId filter added — same convenience Product already has,
+  // useful once expense types are mapped to the category hierarchy.
+  const { search, active, subCategoryId } = req.query;
   const filter = {};
   if (active !== undefined) filter.isActive = active === "true";
   if (search) filter.name = { $regex: search, $options: "i" };
+  if (subCategoryId) filter.subCategoryId = subCategoryId;
 
   const items = await TravelAllowance.find(filter).sort({ name: 1 }).lean();
   return sendSuccess(res, items);
