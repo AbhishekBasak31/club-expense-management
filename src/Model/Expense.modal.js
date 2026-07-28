@@ -72,14 +72,18 @@ const ExpenseItemSchema = new mongoose.Schema(
     verifiedAt         : { type: Date, default: null },
 
     // ── Universal voucher entry — a general free-form expense record
-    // (Particular, Debit, Credit, Approved By, Received By, Created By)
-    // used across many purposes: travel, corporate bills, medical/first-
-    // aid, sudden kitchen/bar purchases, local or online orders, cash
-    // deposits, repairs, etc. Set whenever the "Voucher entry" checkbox
-    // was used on the Add Expense form for this item. Deliberately not
-    // tied to any fixed set of categories, so it adapts to whatever a
-    // given restaurant/club actually uses vouchers for. Approved By /
-    // Received By / Created By are all Employee Master pickers. ──
+    // (Particular, Debit, Credit, Approved By, Created By) used across
+    // many purposes: travel, corporate bills, medical/first-aid, sudden
+    // kitchen/bar purchases, local or online orders, cash deposits,
+    // repairs, fixed bills like Rent/Electricity/Water, etc. Set whenever
+    // the "Voucher entry" checkbox was used on the Add Expense form for
+    // this item. Deliberately not tied to any fixed set of categories, so
+    // it adapts to whatever a given restaurant/club actually uses
+    // vouchers for. Approved By / Created By are Employee Master pickers.
+    // Received By is NOT here — see isAllowance/allowanceDetails below,
+    // which is where "who received it" actually lives (a voucher with N
+    // recipients expands into N items, each carrying one recipient's
+    // identity there). ──
     isVoucher     : { type: Boolean, default: false },
     voucherFields : {
       particular      : { type: String, default: "" },
@@ -87,17 +91,16 @@ const ExpenseItemSchema = new mongoose.Schema(
       credit          : { type: Number, default: 0 },
       approvedById    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
       approvedByName  : { type: String, default: "" }, // denormalized
-      receivedById    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
-      receivedByName  : { type: String, default: "" }, // denormalized
       createdById     : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
       createdByName   : { type: String, default: "" }, // denormalized
     },
 
-    // ── "To" — one or more employees this expense is actually paid to.
-    // With exactly one, isAllowance/allowanceDetails represents that
-    // person's full Debit; with more than one, the row's Debit is split
-    // equally and expands into one item PER recipient (each carrying
-    // that identical share). amount/gstAmount here are in addition to,
+    // ── Received By — one or more employees this expense is actually
+    // paid to. With exactly one, isAllowance/allowanceDetails represents
+    // that person's full Debit; with more than one, the row's Debit is
+    // split equally and expands into one item PER recipient (each
+    // carrying that identical share). amount/gstAmount here are in
+    // addition to,
     // not instead of, the item's own unitPrice/amount/netAmount — those
     // still hold the net total actually paid, so this entry behaves like
     // any other expense item everywhere else (dashboards, exports,

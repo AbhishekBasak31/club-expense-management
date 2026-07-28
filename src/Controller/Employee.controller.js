@@ -1,4 +1,5 @@
 import { Employee } from "../Model/Employee.modal.js";
+import { nextSequence } from "../Model/Counter.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
 // Age is derived from dateOfBirth at request time — never stored, so it's
@@ -20,14 +21,34 @@ const withAge = (doc) => {
 };
 
 export const createEmployee = async (req, res) => {
-  const { empId, name } = req.body;
-  if (!empId?.trim()) return sendError(res, "Employee ID is required.");
-  if (!name?.trim())  return sendError(res, "Employee name is required.");
+  const { name, empId: manualEmpId } = req.body;
+  if (!name?.trim()) return sendError(res, "Employee name is required.");
 
-  const existing = await Employee.findOne({ empId: empId.trim() });
-  if (existing) return sendError(res, `Employee ID "${empId}" is already in use.`);
+  // empId can be typed in manually (temporary — the Add Employee form now
+  // exposes this again) or left blank to auto-generate. Either way it's
+  // validated for uniqueness here before saving.
+  let empId = manualEmpId?.trim();
+  if (empId) {
+    const existing = await Employee.findOne({ empId });
+    if (existing) return sendError(res, `Employee ID "${empId}" is already in use.`);
+  } else {
+    // Sequence is seeded from the highest existing "EMP-###" empId the
+    // first time it runs, so numbering picks up correctly after any
+    // employees that were already in the database (including manually
+    // numbered ones), rather than colliding with them.
+    const seq = await nextSequence("employeeId", async () => {
+      const existingDocs = await Employee.find({}, { empId: 1 }).lean();
+      let max = 0;
+      for (const e of existingDocs) {
+        const m = /^EMP-(\d+)$/.exec(e.empId || "");
+        if (m) max = Math.max(max, parseInt(m[1], 10));
+      }
+      return max;
+    });
+    empId = `EMP-${String(seq).padStart(3, "0")}`;
+  }
 
-  const employee = await Employee.create(req.body);
+  const employee = await Employee.create({ ...req.body, empId });
   return sendSuccess(res, withAge(employee), "Employee created.", 201);
 };
 
@@ -71,4 +92,4 @@ export const deleteEmployee = async (req, res) => {
   const employee = await Employee.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
   if (!employee) return sendError(res, "Employee not found.", 404);
   return sendSuccess(res, null, "Employee deactivated.");
-};  
+};
