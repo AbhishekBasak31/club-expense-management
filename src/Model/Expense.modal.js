@@ -107,6 +107,7 @@ const ExpenseItemSchema = new mongoose.Schema(
     // reports) without special-casing. ──
     isAllowance      : { type: Boolean, default: false },
     allowanceDetails : {
+      // Not set for casual/daily-wage staff — see isCasual below.
       employeeId    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
       empId         : { type: String, default: "" },  // denormalized
       employeeName  : { type: String, default: "" },  // denormalized
@@ -115,6 +116,12 @@ const ExpenseItemSchema = new mongoose.Schema(
       bloodGroup    : { type: String, default: "" },
       mobileNumber  : { type: String, default: "" },
       email         : { type: String, default: "" },
+
+      // True for casual/daily-wage staff who aren't in Employee Master —
+      // paid per-day, typed in by name directly on the Add Expense form
+      // rather than picked from Employee Master. employeeId is never set
+      // for these.
+      isCasual      : { type: Boolean, default: false },
 
       allowanceId   : { type: mongoose.Schema.Types.ObjectId, ref: "TravelAllowance", default: null },
       allowanceName : { type: String, default: "" }, // denormalized
@@ -137,6 +144,13 @@ const ExpenseItemSchema = new mongoose.Schema(
 const ExpenseEntrySchema = new mongoose.Schema(
   {
     date            : { type: Date, required: true, index: true },
+    // Incurred Date — when the expense actually happened, as distinct
+    // from "date" above, which is the Invoice Date (the date printed on
+    // the bill/voucher itself). Usually the same day, but not always —
+    // e.g. a rent invoice dated at the start of the month for an expense
+    // incurred the month before. Defaults to null; the frontend falls
+    // back to the Invoice Date when this isn't explicitly set.
+    incurredDate    : { type: Date, default: null, index: true },
     referenceNumber : { type: String, default: "" }, // auto: EXP-00001
 
     // 'draft' = incomplete entry saved for later completion (e.g. products

@@ -88,7 +88,7 @@ const syncProductCurrentPrice = async (items = []) => {
 // CREATE
 // ─────────────────────────────────────────────────────────────────
 export const createExpense = async (req, res) => {
-  const { date, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
+  const { date, incurredDate, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
   const entryStatus = status === "draft" ? "draft" : "final";
 
   if (!date) return sendError(res, "Date is required.");
@@ -112,6 +112,9 @@ export const createExpense = async (req, res) => {
 
   const entry = await ExpenseEntry.create({
     date,
+    // Incurred Date falls back to the Invoice Date (date) when not
+    // explicitly provided — they're usually the same day.
+    incurredDate: incurredDate || date,
     status: entryStatus,
     referenceNumber: await nextReference(),
     items: calculated,
@@ -182,7 +185,7 @@ export const getExpenseById = async (req, res) => {
 // UPDATE — recalculates totals
 // ─────────────────────────────────────────────────────────────────
 export const updateExpense = async (req, res) => {
-  const { date, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
+  const { date, incurredDate, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
 
   const entry = await ExpenseEntry.findById(req.params.id);
   if (!entry) return sendError(res, "Expense entry not found.", 404);
@@ -219,6 +222,7 @@ export const updateExpense = async (req, res) => {
     entry.grandTotal = grandTotal;
   }
   if (date) entry.date = date;
+  if (incurredDate !== undefined) entry.incurredDate = incurredDate || date || entry.date;
   if (notes !== undefined) entry.notes = notes;
   if (addedBy !== undefined) entry.addedBy = addedBy;
   entry.status = resultingStatus;
