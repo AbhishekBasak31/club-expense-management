@@ -25,9 +25,33 @@ import ExpenseRouter    from "./src/Routers/Expense.routes.js";
 import PLRouter         from "./src/Routers/Pl.router.js";
 import EmployeeRouter   from "./src/Routers/Employee.routes.js";
 import TravelAllowanceRouter   from "./src/Routers/Travelallowence.routes.js";
+import StockRouter      from "./src/Routers/Store.routes.js";
 
 const app  = express();
 const PORT = process.env.PORT || 7000; 
+
+// ── Disable HTTP caching for this API ────────────────────────────
+// Express auto-generates an ETag on every JSON response by default.
+// Browsers then send conditional GETs, and when the server replies
+// 304 Not Modified, the browser silently reuses whatever body it
+// cached from the PREVIOUS request to that same URL — even though the
+// underlying data (expense entries, purchases, etc.) may have changed
+// since. This is exactly right for static assets, but wrong for a
+// live, constantly-changing API: it's what was making entries you'd
+// just added look "missing" — the list endpoint kept returning 304,
+// and the browser kept showing an old cached snapshot instead of
+// re-fetching. `etag: false` stops Express from generating ETags at
+// all, and the middleware below additionally tells every browser/proxy
+// along the way never to store or reuse these responses — belt and
+// suspenders, since some intermediary caches ignore a missing ETag
+// alone.
+app.set("etag", false);
+app.use((req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
 
 // ── Global middleware ────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -98,6 +122,7 @@ app.use("/api/v1/expenses",            ExpenseRouter);
 app.use("/api/v1/pl-statements",       PLRouter);
 app.use("/api/v1/employees",       EmployeeRouter);
 app.use("/api/v1/travel-allowances",  TravelAllowanceRouter);
+app.use("/api/v1/stock",              StockRouter);
 
 
 
