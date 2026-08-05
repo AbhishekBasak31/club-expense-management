@@ -101,6 +101,73 @@ export const getStockList = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
+// GET /api/v1/stock/summary?from=YYYY-MM&to=YYYY-MM
+// Returns [{ month, totalOpening, totalClosing }, ...] — Opening/Closing
+// Stock summed across EVERY product for each month in the range, with
+// the same rollover behavior as getStockList (a month with no explicit
+// Opening Stock saved defaults to the previous month's Closing Stock).
+// If from/to are omitted, covers every month that has any stock data at
+// all — used for "all time" totals.
+// ─────────────────────────────────────────────────────────────────
+export const getStockSummary = async (req, res) => {
+  const { from, to } = req.query;
+
+  let months;
+  if (from && to) {
+    if (!/^\d{4}-\d{2}$/.test(from) || !/^\d{4}-\d{2}$/.test(to)) return sendError(res, "from/to must be YYYY-MM.");
+    months = [];
+    let [y, m] = from.split("-").map(Number);
+    const [ey, em] = to.split("-").map(Number);
+    while (y < ey || (y === ey && m <= em)) {
+      months.push(`${y}-${String(m).padStart(2, "0")}`);
+      m++; if (m > 12) { m = 1; y++; }
+    }
+  } else {
+    const distinctMonths = await StockEntry.distinct("month");
+    if (distinctMonths.length === 0) return sendSuccess(res, []);
+    months = distinctMonths.sort();
+  }
+
+  const firstMonth = months[0];
+  const priorMonth = prevMonthKey(firstMonth);
+  const lastMonth  = months[months.length - 1];
+
+  // One query covers every month in range plus the one just before it
+  // (needed purely for rollover into the first month) — not a query per
+  // product per month.
+  const allEntries = await StockEntry.find({ month: { $gte: priorMonth, $lte: lastMonth } }).lean();
+  const byMonth = new Map();
+  for (const e of allEntries) {
+    if (!byMonth.has(e.month)) byMonth.set(e.month, new Map());
+    byMonth.get(e.month).set(String(e.productId), e);
+  }
+
+  // Walks forward month by month, carrying each product's last-known
+  // Closing Stock as the default Opening Stock for the next month it
+  // doesn't have an explicit figure saved for.
+  const lastClosing = new Map();
+  const priorEntries = byMonth.get(priorMonth) || new Map();
+  for (const [pid, e] of priorEntries) lastClosing.set(pid, e.closingStock || 0);
+
+  const results = months.map((month) => {
+    const entries = byMonth.get(month) || new Map();
+    const productIds = new Set([...lastClosing.keys(), ...entries.keys()]);
+    let totalOpening = 0, totalClosing = 0;
+    for (const pid of productIds) {
+      const e = entries.get(pid);
+      const opening = e?.openingStock ?? lastClosing.get(pid) ?? 0;
+      const closing = e?.closingStock ?? 0;
+      totalOpening += opening;
+      totalClosing += closing;
+      lastClosing.set(pid, closing);
+    }
+    return { month, totalOpening, totalClosing };
+  });
+
+  return sendSuccess(res, results);
+};
+
+// ─────────────────────────────────────────────────────────────────
 // POST /api/v1/stock — upsert Opening/Closing Stock for one product+month
 // body: { productId, month, openingStock?, closingStock? }
 // ─────────────────────────────────────────────────────────────────

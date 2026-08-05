@@ -160,7 +160,16 @@ export const getExpenses = async (req, res) => {
 
   const [data, total] = await Promise.all([
     ExpenseEntry.find(filter)
-      .sort({ date: -1 })
+      // _id as a secondary sort key matters here: MongoDB's skip/limit
+      // pagination is only guaranteed stable across separate page
+      // requests when the sort order is fully deterministic. Sorting by
+      // date alone isn't — many entries share the exact same date value
+      // (any two entries made on the same calendar day have an
+      // IDENTICAL date, since it's always stored as that day's midnight),
+      // so without a tiebreaker, the relative order among those can shift
+      // between the page-1 and page-2 queries, silently skipping some
+      // and/or duplicating others right at the page boundary.
+      .sort({ date: -1, _id: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
       .lean(),
@@ -296,6 +305,30 @@ export const getExpenseSummary = async (req, res) => {
   const summary = result[0] || { totalExpense: 0, totalGST: 0, entryCount: 0 };
   delete summary._id;
   return sendSuccess(res, summary);
+};
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/v1/expenses/monthly-summary?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Returns [{ month: "YYYY-MM", totalExpense }, ...] — every final
+// Purchase/Expense item's netAmount (GST-inclusive), grouped by
+// calendar month, computed entirely in the aggregation pipeline rather
+// than shipping every individual transaction row to the frontend just
+// to sum them there. from/to are optional; omit both for all-time.
+// ─────────────────────────────────────────────────────────────────
+export const getMonthlyExpenseSummary = async (req, res) => {
+  const { from, to } = req.query;
+  const match = { status: "final" };
+  if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
+
+  const rows = await ExpenseEntry.aggregate([
+    { $match: match },
+    { $project: { month: { $dateToString: { format: "%Y-%m", date: "$date" } }, items: 1 } },
+    { $unwind: "$items" },
+    { $group: { _id: "$month", totalExpense: { $sum: { $ifNull: ["$items.netAmount", 0] } } } },
+    { $sort: { _id: 1 } },
+  ]);
+
+  return sendSuccess(res, rows.map((r) => ({ month: r._id, totalExpense: r.totalExpense })));
 };
 
 // ─────────────────────────────────────────────────────────────────
