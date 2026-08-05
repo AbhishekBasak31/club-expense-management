@@ -2,7 +2,7 @@ import express from "express";
 import {
   createExpense, getExpenses, getExpenseById,
   updateExpense, deleteExpense, getExpenseSummary, getExpenseRegister,getExpenseReport,
-  verifyExpenseItem, getMonthlyExpenseSummary,
+  verifyExpenseItem, getMonthlyExpenseSummary, getExpenseTotals,
 } from "../Controller/Expense.controller.js";
 import { authenticate } from "../../src/Middleware/auth.middleware.js";
 import { asyncHandler } from "../../src/Utils/Asynchandeler.js";
@@ -12,6 +12,7 @@ router.use(authenticate);
 
 // Reports come BEFORE /:id so they're not captured as an id param
 router.get   ("/summary",  asyncHandler(getExpenseSummary));
+router.get   ("/totals",   asyncHandler(getExpenseTotals));
 router.get   ("/monthly-summary", asyncHandler(getMonthlyExpenseSummary));
 router.get   ("/register", asyncHandler(getExpenseRegister)); // expense register report
 router.get("/report",   asyncHandler(getExpenseReport));

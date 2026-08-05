@@ -57,7 +57,7 @@ export const getStockList = async (req, res) => {
           _id: { $toLower: { $trim: { input: { $ifNull: ["$items.description", ""] } } } },
           totalQty: { $sum: { $ifNull: ["$items.qty", 0] } },
         } },
-    ]),
+    ]).allowDiskUse(true),
 
     StockEntry.find({ month }).lean(),
     StockEntry.find({ month: prevMonthKey(month) }).lean(),

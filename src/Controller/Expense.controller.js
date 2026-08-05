@@ -138,7 +138,7 @@ export const createExpense = async (req, res) => {
 // LIST — with date range + expenseType filter + pagination
 // ─────────────────────────────────────────────────────────────────
 export const getExpenses = async (req, res) => {
-  const { from, to, expenseType, status, page = 1, limit = 50 } = req.query;
+  const { from, to, expenseType, status, voucher, page = 1, limit = 50 } = req.query;
   const filter = {};
 
   if (from && to) {
@@ -146,6 +146,20 @@ export const getExpenses = async (req, res) => {
   }
   if (expenseType) {
     filter["items.expenseType"] = expenseType;
+  }
+  // Filters at the SERVER, not just client-side, which page's entries
+  // this is for — the Purchase and Expense entry pages were previously
+  // fetching the same mixed, unfiltered 50-per-page results and each
+  // filtering down to their relevant subset in the browser, which meant
+  // a page could come back with very few (or zero) entries actually
+  // relevant to whichever list was asking, even though there was plenty
+  // more data one scroll away. voucher=true → only entries with at least
+  // one voucher item (the Expense entry page); voucher=false → only
+  // entries with no voucher items (the Purchase entry page).
+  if (voucher === "true") {
+    filter.items = { $elemMatch: { isVoucher: true } };
+  } else if (voucher === "false") {
+    filter.items = { $not: { $elemMatch: { isVoucher: true } } };
   }
   // Default: only 'final' entries, so drafts don't silently appear in the
   // normal list. Pass status=draft to fetch drafts, or status=all for both.
@@ -300,11 +314,81 @@ export const getExpenseSummary = async (req, res) => {
         totalGST:     { $sum: "$totalGST" },
         entryCount:   { $sum: 1 },
     }},
-  ]);
+  ]).allowDiskUse(true);
 
   const summary = result[0] || { totalExpense: 0, totalGST: 0, entryCount: 0 };
   delete summary._id;
   return sendSuccess(res, summary);
+};
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/v1/expenses/totals?from=&to=&voucher=true|false
+// Dedicated, pagination-INDEPENDENT totals for the stat cards on the
+// Purchase entry and Expense entry pages. These used to be computed on
+// the frontend by summing whatever was currently loaded into the
+// paginated `entries` array — which meant the total only reflected
+// however much had been scrolled into view at that moment, not the
+// real total, and would show a different number on every refresh
+// depending on scroll/load timing. This computes the true total
+// server-side in one aggregation, entirely independent of pagination.
+//
+// voucher=false → Purchase entries only (mirrors isVoucherEntry() being
+//   false on the frontend). voucher=true → Expense/voucher entries only.
+// Omit voucher for everything combined.
+// ─────────────────────────────────────────────────────────────────
+export const getExpenseTotals = async (req, res) => {
+  const { from, to, voucher } = req.query;
+  const match = { status: "final" };
+  if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
+
+  const pipeline = [
+    { $match: match },
+    // An entry counts as a "voucher entry" if ANY of its items are
+    // voucher items — the exact same rule the frontend's isVoucherEntry()
+    // already uses, just computed here instead.
+    { $addFields: {
+        _isVoucherEntry: {
+          $anyElementTrue: {
+            $map: { input: "$items", as: "i", in: { $eq: ["$$i.isVoucher", true] } },
+          },
+        },
+    }},
+  ];
+  if (voucher === "true")  pipeline.push({ $match: { _isVoucherEntry: true } });
+  if (voucher === "false") pipeline.push({ $match: { _isVoucherEntry: { $ne: true } } });
+
+  pipeline.push({
+    $facet: {
+      // Entry-level total (grandTotal includes delivery charge/round off,
+      // which item-level netAmount doesn't) — matches exactly what "Total
+      // Purchases"/"Total Expenses" has always meant.
+      entryTotal: [
+        { $group: { _id: null, total: { $sum: "$grandTotal" }, count: { $sum: 1 } } },
+      ],
+      // Item-level breakdown by expense type, for the Fixed/Variable/
+      // CAPEX cards.
+      byType: [
+        { $unwind: "$items" },
+        { $group: { _id: "$items.expenseType", total: { $sum: { $ifNull: ["$items.netAmount", 0] } } } },
+      ],
+    },
+  });
+
+  const [result] = await ExpenseEntry.aggregate(pipeline).allowDiskUse(true);
+
+  const entryTotal = result?.entryTotal?.[0] || { total: 0, count: 0 };
+  const byType = { fixed: 0, variable: 0, capex: 0 };
+  for (const row of result?.byType || []) {
+    if (byType[row._id] !== undefined) byType[row._id] = row.total;
+  }
+
+  return sendSuccess(res, {
+    total: entryTotal.total,
+    entryCount: entryTotal.count,
+    fixed: byType.fixed,
+    variable: byType.variable,
+    capex: byType.capex,
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -326,7 +410,7 @@ export const getMonthlyExpenseSummary = async (req, res) => {
     { $unwind: "$items" },
     { $group: { _id: "$month", totalExpense: { $sum: { $ifNull: ["$items.netAmount", 0] } } } },
     { $sort: { _id: 1 } },
-  ]);
+  ]).allowDiskUse(true);
 
   return sendSuccess(res, rows.map((r) => ({ month: r._id, totalExpense: r.totalExpense })));
 };
@@ -348,6 +432,14 @@ export const getExpenseRegister = async (req, res) => {
 
   const pipeline = [
     { $match: match },
+    // Sorted BEFORE unwind so this can use the existing `date: -1` index
+    // on the collection — sorting after unwind (the old order) forces an
+    // in-memory sort across every individual line item instead of every
+    // entry, which is what was pushing this over MongoDB's default
+    // 100MB-per-stage aggregation memory limit once the entry count grew
+    // into the thousands. allowDiskUse below is the safety net for
+    // whatever this still doesn't cover.
+    { $sort: { date: -1 } },
     { $unwind: "$items" },
   ];
 
@@ -357,7 +449,6 @@ export const getExpenseRegister = async (req, res) => {
   }
 
   pipeline.push(
-    { $sort: { date: -1 } },
     { $project: {
         _id: 0,
         entryId:          "$_id",
@@ -393,7 +484,7 @@ export const getExpenseRegister = async (req, res) => {
     }},
   );
 
-  const rows = await ExpenseEntry.aggregate(pipeline);
+  const rows = await ExpenseEntry.aggregate(pipeline).allowDiskUse(true);
 
   // grand totals for the report footer
   const totals = rows.reduce(

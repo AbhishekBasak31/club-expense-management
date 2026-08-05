@@ -107,7 +107,6 @@ const ExpenseItemSchema = new mongoose.Schema(
     // reports) without special-casing. ──
     isAllowance      : { type: Boolean, default: false },
     allowanceDetails : {
-      // Not set for casual/daily-wage staff — see isCasual below.
       employeeId    : { type: mongoose.Schema.Types.ObjectId, ref: "Employee", default: null },
       empId         : { type: String, default: "" },  // denormalized
       employeeName  : { type: String, default: "" },  // denormalized
@@ -116,12 +115,6 @@ const ExpenseItemSchema = new mongoose.Schema(
       bloodGroup    : { type: String, default: "" },
       mobileNumber  : { type: String, default: "" },
       email         : { type: String, default: "" },
-
-      // True for casual/daily-wage staff who aren't in Employee Master —
-      // paid per-day, typed in by name directly on the Add Expense form
-      // rather than picked from Employee Master. employeeId is never set
-      // for these.
-      isCasual      : { type: Boolean, default: false },
 
       allowanceId   : { type: mongoose.Schema.Types.ObjectId, ref: "TravelAllowance", default: null },
       allowanceName : { type: String, default: "" }, // denormalized
@@ -144,13 +137,6 @@ const ExpenseItemSchema = new mongoose.Schema(
 const ExpenseEntrySchema = new mongoose.Schema(
   {
     date            : { type: Date, required: true, index: true },
-    // Incurred Date — when the expense actually happened, as distinct
-    // from "date" above, which is the Invoice Date (the date printed on
-    // the bill/voucher itself). Usually the same day, but not always —
-    // e.g. a rent invoice dated at the start of the month for an expense
-    // incurred the month before. Defaults to null; the frontend falls
-    // back to the Invoice Date when this isn't explicitly set.
-    incurredDate    : { type: Date, default: null, index: true },
     referenceNumber : { type: String, default: "" }, // auto: EXP-00001
 
     // 'draft' = incomplete entry saved for later completion (e.g. products
@@ -175,6 +161,20 @@ const ExpenseEntrySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Compound index matching the exact sort order the listing query uses
+// ({ date: -1, _id: -1 }) — a single-field date index alone can't
+// satisfy this: for any two entries sharing the same date (very common
+// once you're entering dozens/hundreds of entries a day), MongoDB falls
+// back to an in-memory sort to break the tie by _id, and that fallback
+// has its own separate, smaller memory limit that plain find() queries
+// have no disk-spill option for at all (unlike aggregations). At high
+// entry volume that in-memory sort can be exceeded, and the query then
+// fails or behaves inconsistently — this was the actual cause of
+// specific date ranges silently disappearing from the listing pages
+// once entries passed roughly a couple thousand for a month. This
+// compound index lets MongoDB satisfy the whole sort straight from the
+// index instead, with no in-memory step at any volume.
+ExpenseEntrySchema.index({ date: -1, _id: -1 });
 ExpenseEntrySchema.index({ date: -1 });
 ExpenseEntrySchema.index({ referenceNumber: 1 });
 ExpenseEntrySchema.index({ "items.groupHeadName": 1 });
