@@ -404,11 +404,16 @@ export const getMonthlyExpenseSummary = async (req, res) => {
   const match = { status: "final" };
   if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
 
+  // Sums grandTotal PER ENTRY, not netAmount per item. grandTotal =
+  // subTotal + totalGST + deliveryCharge + roundOff — delivery charge
+  // and round-off are whole-entry fields with no single item to attach
+  // to, so summing at item level (the old approach) silently dropped
+  // them from every month's total. No $unwind needed either, since this
+  // is now a straight per-entry sum.
   const rows = await ExpenseEntry.aggregate([
     { $match: match },
-    { $project: { month: { $dateToString: { format: "%Y-%m", date: "$date" } }, items: 1 } },
-    { $unwind: "$items" },
-    { $group: { _id: "$month", totalExpense: { $sum: { $ifNull: ["$items.netAmount", 0] } } } },
+    { $project: { month: { $dateToString: { format: "%Y-%m", date: "$date" } }, grandTotal: 1 } },
+    { $group: { _id: "$month", totalExpense: { $sum: { $ifNull: ["$grandTotal", 0] } } } },
     { $sort: { _id: 1 } },
   ]).allowDiskUse(true);
 
@@ -456,6 +461,12 @@ export const getExpenseRegister = async (req, res) => {
         date:             1,
         referenceNumber:  1,
         status:           1,
+        // Entry-level, not item-level — same value repeated on every row
+        // for a given entry. The frontend must add these ONCE PER UNIQUE
+        // entryId, not once per row, or it'll multiply-count them for
+        // any entry with more than one item.
+        deliveryCharge:   1,
+        roundOff:         1,
         expenseType:      "$items.expenseType",
         groupHeadName:    "$items.groupHeadName",
         groupName:        "$items.groupName",
