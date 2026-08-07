@@ -137,6 +137,16 @@ const ExpenseItemSchema = new mongoose.Schema(
 const ExpenseEntrySchema = new mongoose.Schema(
   {
     date            : { type: Date, required: true, index: true },
+    // Incurred Date — when the expense actually happened, as distinct
+    // from `date` above (the Invoice Date — the date printed on the
+    // bill/voucher itself). Falls back to `date` in the controller when
+    // not explicitly provided. NOTE: this field was missing from the
+    // schema entirely for a while — the controller was already reading
+    // incurredDate off req.body and assigning it on both create and
+    // update, but Mongoose silently drops any field not declared in the
+    // schema, so nothing was ever actually persisted despite the save
+    // logic being correct. Declaring it here is the actual fix.
+    incurredDate    : { type: Date, index: true },
     referenceNumber : { type: String, default: "" }, // auto: EXP-00001
 
     // 'draft' = incomplete entry saved for later completion (e.g. products
@@ -176,6 +186,13 @@ const ExpenseEntrySchema = new mongoose.Schema(
 // index instead, with no in-memory step at any volume.
 ExpenseEntrySchema.index({ date: -1, _id: -1 });
 ExpenseEntrySchema.index({ date: -1 });
+// Same rationale as the date index above — used by the register/
+// monthly-summary reports below, which now filter, sort, and group by
+// incurredDate rather than date (see Expense.controller.js), so this
+// needs the same compound-index treatment to avoid the exact same
+// in-memory-sort failure mode at high entry volume.
+ExpenseEntrySchema.index({ incurredDate: -1, _id: -1 });
+ExpenseEntrySchema.index({ incurredDate: -1 });
 ExpenseEntrySchema.index({ referenceNumber: 1 });
 ExpenseEntrySchema.index({ "items.groupHeadName": 1 });
 ExpenseEntrySchema.index({ "items.groupName": 1 });

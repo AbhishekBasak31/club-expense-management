@@ -138,11 +138,18 @@ export const createExpense = async (req, res) => {
 // LIST — with date range + expenseType filter + pagination
 // ─────────────────────────────────────────────────────────────────
 export const getExpenses = async (req, res) => {
-  const { from, to, expenseType, status, voucher, page = 1, limit = 50 } = req.query;
+  const { from, to, incurredFrom, incurredTo, expenseType, status, voucher, page = 1, limit = 50 } = req.query;
   const filter = {};
 
   if (from && to) {
     filter.date = { $gte: new Date(from), $lte: new Date(to) };
+  }
+  // Incurred Date range — separate from the Invoice Date range above and
+  // combinable with it (both apply as an AND if both are set). Lets you
+  // find, e.g., everything actually incurred in July regardless of what
+  // date the bill/voucher itself was dated.
+  if (incurredFrom && incurredTo) {
+    filter.incurredDate = { $gte: new Date(incurredFrom), $lte: new Date(incurredTo) };
   }
   if (expenseType) {
     filter["items.expenseType"] = expenseType;
@@ -337,9 +344,14 @@ export const getExpenseSummary = async (req, res) => {
 // Omit voucher for everything combined.
 // ─────────────────────────────────────────────────────────────────
 export const getExpenseTotals = async (req, res) => {
-  const { from, to, voucher } = req.query;
+  const { from, to, incurredFrom, incurredTo, voucher } = req.query;
   const match = { status: "final" };
   if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
+  // Incurred Date range — see getExpenses for the same pattern. Used by
+  // the "Monthly Purchase/Expense" cards, which scope to incurred date
+  // rather than invoice date (an entry incurred in July but invoiced in
+  // August should count toward July's total, not August's).
+  if (incurredFrom && incurredTo) match.incurredDate = { $gte: new Date(incurredFrom), $lte: new Date(incurredTo) };
 
   const pipeline = [
     { $match: match },
@@ -402,7 +414,19 @@ export const getExpenseTotals = async (req, res) => {
 export const getMonthlyExpenseSummary = async (req, res) => {
   const { from, to } = req.query;
   const match = { status: "final" };
-  if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
+  // Filters and groups by incurredDate, not date (Invoice Date) — an
+  // entry incurred in July but invoiced in August must land in July's
+  // total here, since this endpoint's whole purpose is "which month
+  // does this belong to" for reporting (P&L yearly/all-time figures).
+  // Requires every entry to actually have incurredDate populated — see
+  // migration_backfill_incurred_date.js, which backfills it for entries
+  // saved before this field existed on the schema. Matching/grouping
+  // directly on incurredDate (rather than falling back to date via
+  // $ifNull for entries missing it) keeps this able to use the
+  // {incurredDate:-1,_id:-1} index; a fallback expression can't use an
+  // index at all, which is exactly the in-memory-sort failure mode
+  // already fixed once for the `date` field.
+  if (from && to) match.incurredDate = { $gte: new Date(from), $lte: new Date(to) };
 
   // Sums grandTotal PER ENTRY, not netAmount per item. grandTotal =
   // subTotal + totalGST + deliveryCharge + roundOff — delivery charge
@@ -412,7 +436,7 @@ export const getMonthlyExpenseSummary = async (req, res) => {
   // is now a straight per-entry sum.
   const rows = await ExpenseEntry.aggregate([
     { $match: match },
-    { $project: { month: { $dateToString: { format: "%Y-%m", date: "$date" } }, grandTotal: 1 } },
+    { $project: { month: { $dateToString: { format: "%Y-%m", date: "$incurredDate" } }, grandTotal: 1 } },
     { $group: { _id: "$month", totalExpense: { $sum: { $ifNull: ["$grandTotal", 0] } } } },
     { $sort: { _id: 1 } },
   ]).allowDiskUse(true);
@@ -428,7 +452,12 @@ export const getMonthlyExpenseSummary = async (req, res) => {
 export const getExpenseRegister = async (req, res) => {
   const { from, to, expenseType, status } = req.query;
   const match = {};
-  if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
+  // Filters by incurredDate, not date (Invoice Date) — see
+  // getMonthlyExpenseSummary above for why, and
+  // migration_backfill_incurred_date.js for why this can match directly
+  // on incurredDate without an $ifNull fallback (which would have
+  // disabled the index below).
+  if (from && to) match.incurredDate = { $gte: new Date(from), $lte: new Date(to) };
   if (!status || status === "final") {
     match.status = "final";
   } else if (status === "draft") {
@@ -437,14 +466,14 @@ export const getExpenseRegister = async (req, res) => {
 
   const pipeline = [
     { $match: match },
-    // Sorted BEFORE unwind so this can use the existing `date: -1` index
-    // on the collection — sorting after unwind (the old order) forces an
-    // in-memory sort across every individual line item instead of every
-    // entry, which is what was pushing this over MongoDB's default
-    // 100MB-per-stage aggregation memory limit once the entry count grew
-    // into the thousands. allowDiskUse below is the safety net for
-    // whatever this still doesn't cover.
-    { $sort: { date: -1 } },
+    // Sorted BEFORE unwind so this can use the existing
+    // `incurredDate: -1, _id: -1` index on the collection — sorting
+    // after unwind forces an in-memory sort across every individual
+    // line item instead of every entry, which is what was pushing this
+    // over MongoDB's default 100MB-per-stage aggregation memory limit
+    // once the entry count grew into the thousands. allowDiskUse below
+    // is the safety net for whatever this still doesn't cover.
+    { $sort: { incurredDate: -1, _id: -1 } },
     { $unwind: "$items" },
   ];
 
@@ -459,6 +488,7 @@ export const getExpenseRegister = async (req, res) => {
         entryId:          "$_id",
         itemId:           "$items._id",
         date:             1,
+        incurredDate:     1,
         referenceNumber:  1,
         status:           1,
         // Entry-level, not item-level — same value repeated on every row
