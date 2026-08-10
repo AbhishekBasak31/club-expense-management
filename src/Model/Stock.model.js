@@ -19,6 +19,20 @@ const StockEntrySchema = new mongoose.Schema(
     // closing stock, unless a physical recount says otherwise.
     openingStock : { type: Number, default: 0 },
     closingStock : { type: Number, default: 0 },
+
+    // ── Bar partial-bottle tracking (optional; Store items never set
+    // this) ── A bottle that's been opened but not fully consumed still
+    // holds real, countable stock — treating every bottle that left the
+    // store as "fully consumed" overstates consumption and understates
+    // closing stock. closingStock above ALWAYS remains the single
+    // authoritative decimal quantity used everywhere else in the system
+    // (P&L stock adjustment, this same Stock List page, etc.) — it's
+    // computed as (complete bottles + closingStockPartialMl / bottle
+    // size in ml, via that product's Product Conversion record) BEFORE
+    // saving. This field only stores the raw ml component separately so
+    // it can be redisplayed and re-edited later without needing to
+    // reverse-engineer it back out of the combined decimal.
+    closingStockPartialMl: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

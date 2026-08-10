@@ -172,13 +172,18 @@ export const getStockSummary = async (req, res) => {
 // body: { productId, month, openingStock?, closingStock? }
 // ─────────────────────────────────────────────────────────────────
 export const upsertStockEntry = async (req, res) => {
-  const { productId, month, openingStock, closingStock } = req.body;
+  const { productId, month, openingStock, closingStock, closingStockPartialMl } = req.body;
   if (!productId) return sendError(res, "productId is required.");
   if (!month || !/^\d{4}-\d{2}$/.test(month)) return sendError(res, "A valid month (YYYY-MM) is required.");
 
   const update = {};
   if (openingStock !== undefined) update.openingStock = Number(openingStock) || 0;
   if (closingStock !== undefined) update.closingStock = Number(closingStock) || 0;
+  // Raw ml component for Bar's partial-bottle tracking — the frontend
+  // has already folded this into `closingStock` above (the number used
+  // everywhere else); this is stored purely so it can be shown/edited
+  // again later without reverse-engineering it back out.
+  if (closingStockPartialMl !== undefined) update.closingStockPartialMl = Number(closingStockPartialMl) || 0;
 
   const entry = await StockEntry.findOneAndUpdate(
     { productId, month },
@@ -187,4 +192,141 @@ export const upsertStockEntry = async (req, res) => {
   );
 
   return sendSuccess(res, entry, "Stock figures saved.");
+};
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/v1/stock/consumption?from=YYYY-MM&to=YYYY-MM
+// Powers the Consumption listing page. Two distinct modes depending on
+// whether from/to are the same month or a genuine multi-month range:
+//
+//  - SINGLE MONTH (from === to): reuses the EXACT same formula and data
+//    source as getStockList above (Current Stock = all-time cumulative
+//    purchases, not scoped to the month) — so this page's single-month
+//    numbers are always identical to the Stock List page for that same
+//    month. No new formula for this case.
+//
+//  - RANGE (from !== to): no existing page computes this, so summing
+//    each month's individual (opening + ALL-TIME-cumulative-current -
+//    closing) would count that same all-time cumulative purchase figure
+//    once per month in the range — wrong for anything more than one
+//    month. Instead:
+//      consumption = openingStock AT THE START of the range
+//                   + quantity purchased DURING the range only
+//                   - closingStock AT THE END of the range
+//    (confirmed with the person building this — no prior page to stay
+//    consistent with here, so this is the one place that formula is new)
+// ─────────────────────────────────────────────────────────────────
+export const getConsumptionList = async (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to || !/^\d{4}-\d{2}$/.test(from) || !/^\d{4}-\d{2}$/.test(to)) {
+    return sendError(res, "Both from and to (YYYY-MM) are required.");
+  }
+
+  const [products, mainCategories] = await Promise.all([
+    Product.find({ isActive: true }).sort({ name: 1 }).lean(),
+    Category.find({ level: "main" }).lean(),
+  ]);
+  const mainCatMap = new Map(mainCategories.map((c) => [String(c._id), c]));
+
+  // Department is DERIVED, not a stored field — confirmed rule: Main
+  // Category "Bar" (case-insensitive) marks a product as Bar; everything
+  // else is Store. Matches the real category structure: COGS > Alcohol
+  // & Beverages > Bar > (sub) > (specific drink).
+  const departmentFor = (p) => ((p.mainCategoryName || "").trim().toLowerCase() === "bar" ? "Bar" : "Store");
+
+  const buildRow = (p, mainCat, openingStock, closingStock, consumption, partialMl) => ({
+    productId:         String(p._id),
+    productCode:       p.productCode || "",
+    productName:       p.name,
+    groupHeadName:     mainCat?.groupHeadName || "",
+    groupName:         mainCat?.groupName || "",
+    mainCategoryName:  p.mainCategoryName || "",
+    subCategoryName:   p.subCategoryName || "",
+    baseCategoryName:  p.baseCategoryName || "",
+    department:        departmentFor(p),
+    openingStock, closingStock, consumption,
+    closingStockPartialMl: partialMl,
+    // "Partial" only ever fires from a real partial-ml figure being
+    // saved (Bar items only, by construction — Store never sets this
+    // field), so this doubles as an implicit department check with no
+    // extra logic needed.
+    status: partialMl > 0 ? "Partial" : "Complete",
+  });
+
+  if (from === to) {
+    const month = from;
+    const asOf = new Date();
+    const [purchaseAgg, stockRows, prevStockRows] = await Promise.all([
+      ExpenseEntry.aggregate([
+        { $match: { status: "final", date: { $lte: asOf } } },
+        { $unwind: "$items" },
+        { $match: { "items.isVoucher": { $ne: true } } },
+        { $group: {
+            _id: { $toLower: { $trim: { input: { $ifNull: ["$items.description", ""] } } } },
+            totalQty: { $sum: { $ifNull: ["$items.qty", 0] } },
+          } },
+      ]).allowDiskUse(true),
+      StockEntry.find({ month }).lean(),
+      StockEntry.find({ month: prevMonthKey(month) }).lean(),
+    ]);
+
+    const purchaseMap  = new Map(purchaseAgg.map((p) => [p._id, p.totalQty]));
+    const stockMap      = new Map(stockRows.map((s) => [String(s.productId), s]));
+    const prevStockMap  = new Map(prevStockRows.map((s) => [String(s.productId), s]));
+
+    const rows = products.map((p) => {
+      const stock   = stockMap.get(String(p._id));
+      const prev    = prevStockMap.get(String(p._id));
+      const mainCat = p.mainCategoryId ? mainCatMap.get(String(p.mainCategoryId)) : null;
+
+      const currentStock = purchaseMap.get(normName(p.name)) || 0;
+      const openingStock = stock?.openingStock ?? prev?.closingStock ?? 0;
+      const closingStock = stock?.closingStock ?? 0;
+      const consumption  = (openingStock + currentStock) - closingStock;
+
+      return buildRow(p, mainCat, openingStock, closingStock, consumption, stock?.closingStockPartialMl || 0);
+    });
+    return sendSuccess(res, rows);
+  }
+
+  // ── Range ──
+  const rangeStartDate = new Date(`${from}-01T00:00:00.000Z`);
+  const [ey2, em2] = to.split("-").map(Number);
+  const rangeEndDate = new Date(Date.UTC(ey2, em2, 0, 23, 59, 59, 999)); // last day of `to` month
+
+  const [purchaseAgg, fromEntries, priorToFromEntries, toEntries] = await Promise.all([
+    ExpenseEntry.aggregate([
+      { $match: { status: "final", date: { $gte: rangeStartDate, $lte: rangeEndDate } } },
+      { $unwind: "$items" },
+      { $match: { "items.isVoucher": { $ne: true } } },
+      { $group: {
+          _id: { $toLower: { $trim: { input: { $ifNull: ["$items.description", ""] } } } },
+          totalQty: { $sum: { $ifNull: ["$items.qty", 0] } },
+        } },
+    ]).allowDiskUse(true),
+    StockEntry.find({ month: from }).lean(),
+    StockEntry.find({ month: prevMonthKey(from) }).lean(),
+    StockEntry.find({ month: to }).lean(),
+  ]);
+
+  const purchaseMap = new Map(purchaseAgg.map((p) => [p._id, p.totalQty]));
+  const fromMap      = new Map(fromEntries.map((s) => [String(s.productId), s]));
+  const priorFromMap = new Map(priorToFromEntries.map((s) => [String(s.productId), s]));
+  const toMap         = new Map(toEntries.map((s) => [String(s.productId), s]));
+
+  const rows = products.map((p) => {
+    const mainCat   = p.mainCategoryId ? mainCatMap.get(String(p.mainCategoryId)) : null;
+    const fromEntry  = fromMap.get(String(p._id));
+    const toEntry    = toMap.get(String(p._id));
+    const priorEntry = priorFromMap.get(String(p._id));
+
+    const openingStock     = fromEntry?.openingStock ?? priorEntry?.closingStock ?? 0;
+    const closingStock     = toEntry?.closingStock ?? 0;
+    const purchasedInRange = purchaseMap.get(normName(p.name)) || 0;
+    const consumption      = (openingStock + purchasedInRange) - closingStock;
+
+    return buildRow(p, mainCat, openingStock, closingStock, consumption, toEntry?.closingStockPartialMl || 0);
+  });
+
+  return sendSuccess(res, rows);
 };
