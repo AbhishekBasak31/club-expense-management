@@ -62,6 +62,39 @@ const PLStatementSchema = new mongoose.Schema(
     expenses : { type: [PLGroupSchema], default: [] },
     revenues : { type: [PLGroupSchema], default: [] },
 
+    // Opening/Closing Stock (₹) for this month — used by the frontend to
+    // compute the stock-adjusted Total Month Expense figure. Was being
+    // sent by the frontend on every create/update the whole time, but
+    // silently dropped since Mongoose ignores any field not declared
+    // here — same failure mode as ExpenseEntry's incurredDate field
+    // before that was fixed. Declaring it here is the actual fix; see
+    // Pl.controller.js for the matching read-and-assign fix, since the
+    // controller wasn't even destructuring these off req.body either.
+    // These two always hold the TOTALS — the authoritative figures every
+    // consumer (P&L formula, Expense Dashboard) reads. stockBreakdown
+    // below is the per-category detail those totals are summed from.
+    openingStock : { type: Number, default: 0, min: 0 },
+    closingStock : { type: Number, default: 0, min: 0 },
+
+    // Per-category Opening/Closing Stock detail (Food, Cloud, Alcohol,
+    // Beverage, …) — entered category-by-category on the P&L page's
+    // Manual stock entry; openingStock/closingStock above are the sums.
+    // Stored so the per-category figures can be redisplayed and
+    // re-edited later, not just their totals.
+    stockBreakdown : {
+      type: [
+        new mongoose.Schema(
+          {
+            category     : { type: String, required: true, trim: true },
+            openingStock : { type: Number, default: 0, min: 0 },
+            closingStock : { type: Number, default: 0, min: 0 },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+
     notes     : { type: String, default: "" },
     createdBy : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     updatedBy : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

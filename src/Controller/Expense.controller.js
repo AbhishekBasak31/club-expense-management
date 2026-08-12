@@ -311,7 +311,11 @@ export const deleteExpense = async (req, res) => {
 export const getExpenseSummary = async (req, res) => {
   const { from, to } = req.query;
   const match = {};
-  if (from && to) match.date = { $gte: new Date(from), $lte: new Date(to) };
+  // Filters by incurredDate, not date (Invoice Date) — same reasoning as
+  // getMonthlyExpenseSummary/getExpenseRegister below: this is a "which
+  // period does this belong to" report, so it groups by when the
+  // expense actually happened, not the date on the bill.
+  if (from && to) match.incurredDate = { $gte: new Date(from), $lte: new Date(to) };
 
   const result = await ExpenseEntry.aggregate([
     { $match: match },
@@ -553,11 +557,12 @@ export const getExpenseReport = async (req, res) => {
       query.department = department;   
     }
  
-    // 2. Date Filter
+    // 2. Date Filter — filters by incurredDate, not date (Invoice Date),
+    // same as every other report endpoint in this file.
     if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
+      query.incurredDate = {};
+      if (startDate) query.incurredDate.$gte = new Date(startDate);
+      if (endDate) query.incurredDate.$lte = new Date(endDate);
     }
 
     // 3. Category & Vendor Filters

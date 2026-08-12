@@ -75,11 +75,28 @@ const sanitizeGroups = (groups = [], sideName) => {
   });
 };
 
+// Per-category Opening/Closing Stock rows (Food, Cloud, Alcohol,
+// Beverage, …) — the top-level openingStock/closingStock fields hold
+// the TOTALS these rows sum to; this array is only the redisplayable
+// per-category detail. Rows with no category name are dropped rather
+// than erroring, since an untouched blank row in the UI isn't a
+// mistake worth rejecting the whole save over.
+const sanitizeStockBreakdown = (breakdown = []) => {
+  if (!Array.isArray(breakdown)) return [];
+  return breakdown
+    .filter((r) => r && typeof r.category === "string" && r.category.trim())
+    .map((r) => ({
+      category:     r.category.trim(),
+      openingStock: Number(r.openingStock) || 0,
+      closingStock: Number(r.closingStock) || 0,
+    }));
+};
+
 // ─────────────────────────────────────────────────────────────────
 // CREATE — one statement per month (month is unique)
 // ─────────────────────────────────────────────────────────────────
 export const createPLStatement = async (req, res) => {
-  const { month, expenses, revenues, notes } = req.body;
+  const { month, expenses, revenues, notes, openingStock, closingStock, stockBreakdown } = req.body;
 
   if (!month || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
     return sendError(res, "A valid month (YYYY-MM) is required.");
@@ -94,6 +111,9 @@ export const createPLStatement = async (req, res) => {
     month,
     expenses: sanitizeGroups(expenses, "expense"),
     revenues: sanitizeGroups(revenues, "revenue"),
+    openingStock: Number(openingStock) || 0,
+    closingStock: Number(closingStock) || 0,
+    stockBreakdown: sanitizeStockBreakdown(stockBreakdown),
     notes: notes || "",
     createdBy: req.user.userId,
     updatedBy: req.user.userId,
@@ -133,7 +153,7 @@ export const getPLStatementByMonth = async (req, res) => {
 // modal which sends the whole statement back)
 // ─────────────────────────────────────────────────────────────────
 export const updatePLStatement = async (req, res) => {
-  const { month, expenses, revenues, notes } = req.body;
+  const { month, expenses, revenues, notes, openingStock, closingStock, stockBreakdown } = req.body;
 
   const stmt = await PLStatement.findById(req.params.id);
   if (!stmt) return sendError(res, "P&L statement not found.", 404);
@@ -147,6 +167,9 @@ export const updatePLStatement = async (req, res) => {
   if (expenses !== undefined) stmt.expenses = sanitizeGroups(expenses, "expense");
   if (revenues !== undefined) stmt.revenues = sanitizeGroups(revenues, "revenue");
   if (notes !== undefined) stmt.notes = notes;
+  if (openingStock !== undefined) stmt.openingStock = Number(openingStock) || 0;
+  if (closingStock !== undefined) stmt.closingStock = Number(closingStock) || 0;
+  if (stockBreakdown !== undefined) stmt.stockBreakdown = sanitizeStockBreakdown(stockBreakdown);
   stmt.updatedBy = req.user.userId;
 
   await stmt.save();
