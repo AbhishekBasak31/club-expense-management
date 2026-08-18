@@ -22,6 +22,15 @@ function prevMonthKey(month) {
 // together — not a new assumption introduced here.
 const normName = (s) => (s || "").trim().toLowerCase();
 
+// Real number of calendar days in a "YYYY-MM" month string — used to
+// validate a Stock Allocation day actually exists in that month (e.g.
+// rejecting Day 30 for February).
+function daysInMonth(month) {
+  const [y, m] = month.split("-").map(Number);
+  return new Date(y, m, 0).getDate();
+}
+
+
 // ─────────────────────────────────────────────────────────────────
 // GET /api/v1/stock?month=YYYY-MM
 // ─────────────────────────────────────────────────────────────────
@@ -73,7 +82,17 @@ export const getStockList = async (req, res) => {
     const prev  = prevStockMap.get(String(p._id));
     const mainCat = p.mainCategoryId ? mainCatMap.get(String(p.mainCategoryId)) : null;
 
-    const currentStock = purchaseMap.get(normName(p.name)) || 0;
+    const rawCurrentStock = purchaseMap.get(normName(p.name)) || 0;
+    // Stock Allocation — day-by-day quantity allocated within this
+    // month (see allocateStock below) is deducted from Current Stock
+    // here, so "Current Stock" always means "what's actually still
+    // available to allocate," not the raw all-time purchased total.
+    // Consumption then naturally reflects this too, since it's derived
+    // from currentStock below — no separate consumption adjustment
+    // needed.
+    const dailyAllocations = stock?.dailyAllocations || [];
+    const totalAllocated = dailyAllocations.reduce((s, a) => s + (a.qty || 0), 0);
+    const currentStock = rawCurrentStock - totalAllocated;
     // Opening Stock: this month's saved figure if one was entered,
     // otherwise last month's closing stock rolls forward automatically,
     // otherwise 0 (first month this product has ever been tracked).
@@ -94,6 +113,7 @@ export const getStockList = async (req, res) => {
       subCategoryName:   p.subCategoryName || "",
       baseCategoryName:  p.baseCategoryName || "",
       openingStock, currentStock, consumption, closingStock,
+      dailyAllocations,
     };
   });
 
@@ -192,6 +212,95 @@ export const upsertStockEntry = async (req, res) => {
   );
 
   return sendSuccess(res, entry, "Stock figures saved.");
+};
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/stock/allocate — replaces the FULL set of day-by-day
+// allocations for one product+month (not a per-day patch — the
+// frontend always submits its complete merged draft, see
+// StockAllocationPayload's own comment on the frontend for why).
+// body: { productId, month, allocations: [{ day, qty }] }
+//
+// Validates every day is a real day within `month` (rejects e.g. Day 30
+// for February), and that the total requested does NOT exceed this
+// product's real Current Stock (raw all-time purchased quantity, before
+// this allocation) — rejected outright rather than silently clamped, so
+// the person sees an explicit error instead of a smaller allocation
+// than they asked for.
+//
+// Returns the full updated row in the SAME shape getStockList returns,
+// with Current Stock/Consumption already reflecting the new allocation
+// total — the frontend trusts this response directly rather than
+// recomputing anything itself.
+// ─────────────────────────────────────────────────────────────────
+export const allocateStock = async (req, res) => {
+  const { productId, month, allocations } = req.body;
+  if (!productId) return sendError(res, "productId is required.");
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) return sendError(res, "A valid month (YYYY-MM) is required.");
+  if (!Array.isArray(allocations)) return sendError(res, "allocations must be an array.");
+
+  const lastDay = daysInMonth(month);
+  for (const a of allocations) {
+    if (!Number.isInteger(a.day) || a.day < 1 || a.day > lastDay) {
+      return sendError(res, `Day ${a.day} is not a valid day in ${month} (1–${lastDay}).`);
+    }
+    if (typeof a.qty !== "number" || a.qty < 0) {
+      return sendError(res, `Invalid quantity for Day ${a.day}.`);
+    }
+  }
+
+  const product = await Product.findById(productId).lean();
+  if (!product) return sendError(res, "Product not found.", 404);
+
+  const asOf = new Date();
+  const [purchaseAgg, stock, prev, mainCategories] = await Promise.all([
+    ExpenseEntry.aggregate([
+      { $match: { status: "final", date: { $lte: asOf } } },
+      { $unwind: "$items" },
+      { $match: { "items.isVoucher": { $ne: true } } },
+      { $match: { "items.description": { $regex: `^\\s*${normName(product.name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, $options: "i" } } },
+      { $group: { _id: null, totalQty: { $sum: { $ifNull: ["$items.qty", 0] } } } },
+    ]).allowDiskUse(true),
+    StockEntry.findOne({ productId, month }).lean(),
+    StockEntry.findOne({ productId, month: prevMonthKey(month) }).lean(),
+    Category.find({ level: "main" }).lean(),
+  ]);
+
+  const rawCurrentStock = purchaseAgg[0]?.totalQty || 0;
+  const totalRequested = allocations.reduce((s, a) => s + a.qty, 0);
+  if (totalRequested > rawCurrentStock) {
+    return sendError(res, `Total allocated (${totalRequested}) exceeds Current Qty (${rawCurrentStock}) available for this product.`);
+  }
+
+  const updated = await StockEntry.findOneAndUpdate(
+    { productId, month },
+    { $set: { dailyAllocations: allocations } },
+    { new: true, upsert: true, runValidators: true }
+  );
+
+  const mainCat = product.mainCategoryId
+    ? mainCategories.find((c) => String(c._id) === String(product.mainCategoryId))
+    : null;
+  const openingStock = updated.openingStock ?? prev?.closingStock ?? 0;
+  const closingStock = updated.closingStock ?? 0;
+  const currentStock = rawCurrentStock - totalRequested;
+  const consumption  = (openingStock + currentStock) - closingStock;
+
+  return sendSuccess(res, {
+    productId:        String(product._id),
+    productCode:       product.productCode || "",
+    productName:       product.name,
+    hsnCode:           product.hsnCode || "",
+    uomName:           product.uomName || "",
+    groupHeadName:     mainCat?.groupHeadName || "",
+    groupName:         mainCat?.groupName || "",
+    mainCategoryName:  product.mainCategoryName || "",
+    subCategoryName:   product.subCategoryName || "",
+    baseCategoryName:  product.baseCategoryName || "",
+    openingStock, currentStock, consumption, closingStock,
+    closingStockPartialMl: updated.closingStockPartialMl || 0,
+    dailyAllocations: updated.dailyAllocations || [],
+  }, "Stock allocation saved.");
 };
 
 // ─────────────────────────────────────────────────────────────────

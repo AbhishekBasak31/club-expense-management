@@ -33,6 +33,20 @@ const StockEntrySchema = new mongoose.Schema(
     // it can be redisplayed and re-edited later without needing to
     // reverse-engineer it back out of the combined decimal.
     closingStockPartialMl: { type: Number, default: 0 },
+
+    // ── Stock Allocation — day-by-day quantity allocated within this
+    // month, per the Stock Allocation modal on the Stock List page.
+    // Only days that actually have an allocation are stored — day is
+    // 1..(real day count for `month`), validated in the controller, not
+    // here (Mongoose schema validation happens per-subdocument, without
+    // easy access to the parent's own `month` field to check against).
+    dailyAllocations: {
+      type: [{
+        day : { type: Number, required: true, min: 1, max: 31 },
+        qty : { type: Number, required: true, min: 0 },
+      }],
+      default: [],
+    },
   },
   { timestamps: true }
 );
