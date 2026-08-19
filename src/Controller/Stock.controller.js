@@ -114,6 +114,7 @@ export const getStockList = async (req, res) => {
       baseCategoryName:  p.baseCategoryName || "",
       openingStock, currentStock, consumption, closingStock,
       dailyAllocations,
+      reorderLevel:      p.reorderLevel || 0,
     };
   });
 
@@ -300,6 +301,7 @@ export const allocateStock = async (req, res) => {
     openingStock, currentStock, consumption, closingStock,
     closingStockPartialMl: updated.closingStockPartialMl || 0,
     dailyAllocations: updated.dailyAllocations || [],
+    reorderLevel: product.reorderLevel || 0,
   }, "Stock allocation saved.");
 };
 

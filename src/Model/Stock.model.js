@@ -42,8 +42,9 @@ const StockEntrySchema = new mongoose.Schema(
     // easy access to the parent's own `month` field to check against).
     dailyAllocations: {
       type: [{
-        day : { type: Number, required: true, min: 1, max: 31 },
-        qty : { type: Number, required: true, min: 0 },
+        day    : { type: Number, required: true, min: 1, max: 31 },
+        qty    : { type: Number, required: true, min: 0 },
+        remark : { type: String, default: "" },
       }],
       default: [],
     },
