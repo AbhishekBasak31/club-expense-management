@@ -27,6 +27,7 @@ import EmployeeRouter   from "./src/Routers/Employee.routes.js";
 import TravelAllowanceRouter   from "./src/Routers/Travelallowence.routes.js";
 import StockRouter      from "./src/Routers/Store.routes.js";
 import ManualExpenseRouter from "./src/Routers/Manual.route.js";
+import ChecklistMasterRouter from "./src/Routers/ChecklistMaster.route.js";
 import ChecklistRouter from "./src/Routers/Checklist.route.js";
 
 const app  = express();
@@ -126,6 +127,7 @@ app.use("/api/v1/employees",       EmployeeRouter);
 app.use("/api/v1/travel-allowances",  TravelAllowanceRouter);
 app.use("/api/v1/stock",              StockRouter);
 app.use("/api/v1/manual-expenses",    ManualExpenseRouter);
+app.use("/api/v1/checklist-master", ChecklistMasterRouter);
 app.use("/api/v1/checklists", ChecklistRouter);
 app.use('/uploads', express.static('uploads'));
 
