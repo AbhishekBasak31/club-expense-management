@@ -1,5 +1,7 @@
-import { Checklist } from "../Model/checklist.modal.js";
-import { ChecklistMaster } from "../Model/ChecklistMaster.model.js";
+
+import Checklist from "../Model/checklist.modal.js";
+import ChecklistMaster from "../Model/ChecklistMaster.modal.js";
+
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 import { storeUploadedFile, deleteStoredFile } from "../Utils/upload.js";
 
