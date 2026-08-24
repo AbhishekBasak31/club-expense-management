@@ -1,11 +1,10 @@
-
 import Checklist from "../Model/checklist.modal.js";
 import ChecklistMaster from "../Model/ChecklistMaster.modal.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 import { deleteStoredFile } from "../Utils/upload.js";
 
 export const createChecklistMaster = async (req, res) => {
-  const { name } = req.body;
+  const { name, category } = req.body;
   if (!name?.trim()) return sendError(res, "Checklist name is required.");
 
   const existing = await ChecklistMaster.findOne({ name: name.trim(), isActive: true });
@@ -13,6 +12,7 @@ export const createChecklistMaster = async (req, res) => {
 
   const item = await ChecklistMaster.create({
     name: name.trim(),
+    category: category?.trim() || "",
     createdBy: req.user?.userId ?? null,
     updatedBy: req.user?.userId ?? null,
   });
@@ -20,10 +20,11 @@ export const createChecklistMaster = async (req, res) => {
 };
 
 export const getChecklistMasters = async (req, res) => {
-  const { search, active } = req.query;
+  const { search, active, category } = req.query;
   const filter = {};
   filter.isActive = active !== undefined ? active === "true" : true;
   if (search) filter.name = { $regex: search, $options: "i" };
+  if (category) filter.category = category;
 
   const items = await ChecklistMaster.find(filter).sort({ name: 1 }).lean();
   return sendSuccess(res, items);
@@ -36,7 +37,7 @@ export const getChecklistMasterById = async (req, res) => {
 };
 
 export const updateChecklistMaster = async (req, res) => {
-  const { name } = req.body;
+  const { name, category } = req.body;
   if (name !== undefined && !name.trim()) return sendError(res, "Checklist name cannot be empty.");
 
   if (name?.trim()) {
@@ -46,7 +47,13 @@ export const updateChecklistMaster = async (req, res) => {
 
   const item = await ChecklistMaster.findByIdAndUpdate(
     req.params.id,
-    { $set: { ...(name?.trim() ? { name: name.trim() } : {}), updatedBy: req.user?.userId ?? null } },
+    {
+      $set: {
+        ...(name?.trim() ? { name: name.trim() } : {}),
+        ...(category !== undefined ? { category: category.trim() } : {}),
+        updatedBy: req.user?.userId ?? null,
+      },
+    },
     { new: true, runValidators: true }
   );
   if (!item) return sendError(res, "Checklist name not found.", 404);

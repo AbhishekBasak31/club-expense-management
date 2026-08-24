@@ -1,4 +1,3 @@
-
 import Checklist from "../Model/checklist.modal.js";
 import ChecklistMaster from "../Model/ChecklistMaster.modal.js";
 
@@ -33,6 +32,7 @@ function mergeRow(master, mgmt) {
     _id: String(master._id),
     checklistMasterId: String(master._id),
     checklistName: master.name,
+    category: master.category || "",
     dateOfEnrollment: mgmt?.dateOfEnrollment ?? null,
     dateOfValidation: mgmt?.dateOfValidation ?? null,
     concernedPerson: mgmt?.concernedPerson ?? "",
@@ -50,10 +50,11 @@ function mergeRow(master, mgmt) {
 // Query params (all optional):
 //   search            — matches the master item's name, or concernedPerson/email/phoneNumber
 //   status            — 'valid' | 'expiring_soon' | 'expired' | 'pending'
+//   category          — exact match against the master item's category tag
 //   concernedPerson   — exact match
 //   validationFrom/To — ISO date bounds on dateOfValidation
 export const getChecklists = async (req, res) => {
-  const { search, status, concernedPerson, validationFrom, validationTo } = req.query;
+  const { search, status, category, concernedPerson, validationFrom, validationTo } = req.query;
 
   const masters = await ChecklistMaster.find({ isActive: true }).sort({ name: 1 }).lean();
   const managements = await Checklist.find({ isActive: true }).lean();
@@ -71,6 +72,7 @@ export const getChecklists = async (req, res) => {
     );
   }
   if (status) rows = rows.filter(r => r.status === status);
+  if (category) rows = rows.filter(r => r.category === category);
   if (concernedPerson) rows = rows.filter(r => r.concernedPerson === concernedPerson);
   if (validationFrom) rows = rows.filter(r => r.dateOfValidation && new Date(r.dateOfValidation) >= new Date(validationFrom));
   if (validationTo)   rows = rows.filter(r => r.dateOfValidation && new Date(r.dateOfValidation) <= new Date(validationTo));
