@@ -29,6 +29,8 @@ import StockRouter      from "./src/Routers/Store.routes.js";
 import ManualExpenseRouter from "./src/Routers/Manual.route.js";
 import ChecklistMasterRouter from "./src/Routers/ChecklistMaster.route.js";
 import ChecklistRouter from "./src/Routers/Checklist.route.js";
+import PartyQueryRouter from "./src/Routers/PartyQuery.route.js";
+import AlcoholPurchaseRequirementRouter from "./src/Routers/AlcoholPurchaseReq.route.js";
 
 const app  = express();
 const PORT = process.env.PORT || 7000; 
@@ -129,7 +131,13 @@ app.use("/api/v1/stock",              StockRouter);
 app.use("/api/v1/manual-expenses",    ManualExpenseRouter);
 app.use("/api/v1/checklist-master", ChecklistMasterRouter);
 app.use("/api/v1/checklists", ChecklistRouter);
+app.use("/api/v1/party-queries", PartyQueryRouter);
+app.use("/api/v1/party-queries", PartyQueryRouter);
+// ── Alcohol purchase requirements ─────────────────────────────────
+app.use("/api/v1/alcohol-purchase-requirements", AlcoholPurchaseRequirementRouter);
+
 app.use('/uploads', express.static('uploads'));
+
 
 // ── Error handling (must be last) ────────────────────────────────
 app.use(notFound);
