@@ -31,6 +31,7 @@ import ChecklistMasterRouter from "./src/Routers/ChecklistMaster.route.js";
 import ChecklistRouter from "./src/Routers/Checklist.route.js";
 import PartyQueryRouter from "./src/Routers/PartyQuery.route.js";
 import AlcoholPurchaseRequirementRouter from "./src/Routers/AlcoholPurchaseReq.route.js";
+import PartyAlcoholConsumptionRouter from "./src/Routers/PartyAlcoholConsumpiton.route.js";
 
 const app  = express();
 const PORT = process.env.PORT || 7000; 
@@ -135,6 +136,8 @@ app.use("/api/v1/party-queries", PartyQueryRouter);
 app.use("/api/v1/party-queries", PartyQueryRouter);
 // ── Alcohol purchase requirements ─────────────────────────────────
 app.use("/api/v1/alcohol-purchase-requirements", AlcoholPurchaseRequirementRouter);
+app.use("/api/v1/party-alcohol-consumption", PartyAlcoholConsumptionRouter);
+
 
 app.use('/uploads', express.static('uploads'));
 

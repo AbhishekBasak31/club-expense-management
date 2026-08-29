@@ -35,12 +35,25 @@ const AdvanceSchema = new mongoose.Schema(
 );
 
 const MenuItemSchema = new mongoose.Schema(
-  { name: { type: String, trim: true, required: true } },
+  {
+    name: { type: String, trim: true, required: true },
+    // How much of this item is expected to be consumed at the party —
+    // set when the RFP is built, so the new Party Alcohol Consumption
+    // page can show "Expected" alongside "Actual" without guessing.
+    // Not required (defaults to 0) since it wasn't captured on RFPs
+    // created before this field existed — those just show 0 expected
+    // until someone edits the RFP and fills it in.
+    expectedQty: { type: Number, default: 0, min: 0 },
+  },
   { _id: false }
 );
 
 const AlcoholItemSchema = new mongoose.Schema(
-  { drinkType: { type: String, trim: true, required: true }, brand: { type: String, trim: true, required: true } },
+  {
+    drinkType: { type: String, trim: true, required: true },
+    brand: { type: String, trim: true, required: true },
+    expectedQty: { type: Number, default: 0, min: 0 },
+  },
   { _id: false }
 );
 
@@ -88,9 +101,16 @@ const RfpSchema = new mongoose.Schema(
       minimumGuarantee: { type: String, trim: true, default: "" },
       maximumExpected: { type: String, trim: true, default: "" },
       billingBy: { type: String, trim: true, default: "" },
-      alcoholPackageRate: { type: String, trim: true, default: "" },
-      foodPackageRate: { type: String, trim: true, default: "" },
-      beveragePackageRate: { type: String, trim: true, default: "" },
+      // Package rates — NUMBERS, not free text. Previously these were
+      // plain strings (matching examples like "4000++" seen in a
+      // reference document), but that made them impossible to reliably
+      // sum into a real "Expected Sell" figure for the new Party
+      // Alcohol Consumption page. If a rate genuinely needs a "++"-style
+      // qualifier noted, that belongs in `note` above, not baked into
+      // a number field that other features now depend on being clean.
+      alcoholPackageRate: { type: Number, default: 0, min: 0 },
+      foodPackageRate: { type: Number, default: 0, min: 0 },
+      beveragePackageRate: { type: Number, default: 0, min: 0 },
       packageTime: { type: String, trim: true, default: "" },
       audio: { type: String, trim: true, default: "" },
       laptop: { type: Boolean, default: false },
