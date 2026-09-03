@@ -2,6 +2,7 @@ import { StockEntry } from "../Model/Stock.model.js";
 import { ExpenseEntry } from "../Model/Expense.modal.js";
 import { Product } from "../Model/product.model.js";
 import { Category } from "../Model/catagory.model.js";
+import { Breakage } from "../Model/Crockery.Breakage.modal.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
 // Previous calendar month, as "YYYY-MM" — used to roll a product's
@@ -47,7 +48,13 @@ export const getStockList = async (req, res) => {
   const asOf = new Date(); // now, in UTC — entry dates are always stored at UTC midnight
 
   const [products, mainCategories, purchaseAgg, stockRows, prevStockRows] = await Promise.all([
-    Product.find({ isActive: true }).sort({ name: 1 }).lean(),
+    // CAPEX items are deliberately excluded here — their Opening/Closing
+    // Stock is managed on the dedicated CAPEX Item Stock List page
+    // instead (see getCapexStockList below), not this one. Keeping both
+    // pages able to edit the same StockEntry documents would risk one
+    // page's save silently overwriting the other's, so this list simply
+    // never shows CAPEX products at all.
+    Product.find({ isActive: true, expenseType: { $ne: "capital" } }).sort({ name: 1 }).lean(),
 
     // Resolves Group Head / Group for each product via its Main
     // Category — Product itself only links to Main/Sub/Base directly;
@@ -334,7 +341,11 @@ export const getConsumptionList = async (req, res) => {
   }
 
   const [products, mainCategories] = await Promise.all([
-    Product.find({ isActive: true }).sort({ name: 1 }).lean(),
+    // Same CAPEX exclusion as getStockList above — CAPEX products don't
+    // appear on the standard Consumption page either, since their
+    // "consumption" (breakage) and stock figures live on the dedicated
+    // CAPEX Item Stock List / Monthly Breakage Report instead.
+    Product.find({ isActive: true, expenseType: { $ne: "capital" } }).sort({ name: 1 }).lean(),
     Category.find({ level: "main" }).lean(),
   ]);
   const mainCatMap = new Map(mainCategories.map((c) => [String(c._id), c]));
@@ -437,6 +448,112 @@ export const getConsumptionList = async (req, res) => {
     const consumption      = (openingStock + purchasedInRange) - closingStock;
 
     return buildRow(p, mainCat, openingStock, closingStock, consumption, toEntry?.closingStockPartialMl || 0);
+  });
+
+  return sendSuccess(res, rows);
+};
+// ─────────────────────────────────────────────────────────────────
+// GET /api/v1/stock/capex-list?month=YYYY-MM
+// The CAPEX-only counterpart to getStockList above — same page shape
+// (Opening/Current/Consumption/Closing Stock per product, per month),
+// but three real differences, per what CAPEX items actually need:
+//
+//  - Scoped to expenseType:'capital' products ONLY. This is the one
+//    place their Opening/Closing Stock gets entered — the standard
+//    Stock List and Consumption pages both now exclude CAPEX entirely
+//    (see the Product.find filters added above), so there's no other
+//    page that could conflict with saves made here.
+//
+//  - Current Stock = openingStock + purchasedQty FOR THE SELECTED
+//    MONTH — not an all-time cumulative purchased total the way the
+//    standard list's Current Stock is. CAPEX items (crockery, kitchen
+//    equipment, furniture) don't have the same "how much have I ever
+//    bought" framing that the standard list's inventory items do;
+//    "what came in this month, added to what I opened the month with"
+//    is what was asked for here.
+//
+//  - "Consumption" is relabeled in spirit, not in the API shape (the
+//    frontend still reads it as `consumption` so the two pages can
+//    share the same row-rendering code) — but the VALUE is this
+//    product's total BREAKAGE quantity for the month, from the
+//    Breakage collection, not the standard (opening + current -
+//    closing) formula. CAPEX items don't get "consumed" the way food/
+//    beverage stock does; they break. Matched by productId directly
+//    (Breakage already stores a real productId reference, unlike
+//    Purchase-entry items which only carry a free-text description),
+//    so this is a cleaner, more reliable join than the name-matching
+//    the rest of this file has to fall back on.
+//
+// No Stock Allocation here — that's a day-by-day issuance concept for
+// consumable stock (Bar in particular) that has no CAPEX equivalent,
+// so this endpoint's rows never carry dailyAllocations.
+// ─────────────────────────────────────────────────────────────────
+export const getCapexStockList = async (req, res) => {
+  const { month } = req.query;
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) return sendError(res, "A valid month (YYYY-MM) is required.");
+  const [year, mon] = month.split("-").map(Number);
+  const startDate = new Date(year, mon - 1, 1, 0, 0, 0, 0);
+  const endDate = new Date(year, mon, 0, 23, 59, 59, 999);
+
+  const [products, mainCategories, purchaseAgg, stockRows, prevStockRows, breakageEntries] = await Promise.all([
+    Product.find({ isActive: true, expenseType: "capital" }).sort({ name: 1 }).lean(),
+    Category.find({ level: "main" }).lean(),
+
+    // Purchased qty for THIS MONTH only (not all-time) — see comment above.
+    ExpenseEntry.aggregate([
+      { $match: { status: "final", incurredDate: { $gte: startDate, $lte: endDate } } },
+      { $unwind: "$items" },
+      { $match: { "items.isVoucher": { $ne: true } } },
+      { $group: {
+          _id: { $toLower: { $trim: { input: { $ifNull: ["$items.description", ""] } } } },
+          totalQty: { $sum: { $ifNull: ["$items.qty", 0] } },
+        } },
+    ]).allowDiskUse(true),
+
+    StockEntry.find({ month }).lean(),
+    StockEntry.find({ month: prevMonthKey(month) }).lean(),
+
+    // Breakage collection — imported at the top of this file (see the
+    // import added alongside the other model imports).
+    Breakage.find({ isActive: true, date: { $gte: startDate, $lte: endDate } }).lean(),
+  ]);
+
+  const purchaseMap = new Map(purchaseAgg.map((p) => [p._id, p.totalQty]));
+  const stockMap     = new Map(stockRows.map((s) => [String(s.productId), s]));
+  const prevStockMap = new Map(prevStockRows.map((s) => [String(s.productId), s]));
+  const mainCatMap   = new Map(mainCategories.map((c) => [String(c._id), c]));
+
+  const breakageByProduct = new Map();
+  breakageEntries.forEach((b) => {
+    const pid = String(b.productId);
+    breakageByProduct.set(pid, (breakageByProduct.get(pid) || 0) + (b.qtyBroken || 0));
+  });
+
+  const rows = products.map((p) => {
+    const stock = stockMap.get(String(p._id));
+    const prev  = prevStockMap.get(String(p._id));
+    const mainCat = p.mainCategoryId ? mainCatMap.get(String(p.mainCategoryId)) : null;
+
+    const purchasedQty = purchaseMap.get(normName(p.name)) || 0;
+    const openingStock = stock?.openingStock ?? prev?.closingStock ?? 0;
+    const currentStock = openingStock + purchasedQty;
+    const closingStock = stock?.closingStock ?? 0;
+    const consumption  = breakageByProduct.get(String(p._id)) || 0; // = breakage qty, not the standard formula
+
+    return {
+      productId:        String(p._id),
+      productCode:       p.productCode || "",
+      productName:       p.name,
+      hsnCode:           p.hsnCode || "",
+      uomName:           p.uomName || "",
+      groupHeadName:     mainCat?.groupHeadName || "",
+      groupName:         mainCat?.groupName || "",
+      mainCategoryName:  p.mainCategoryName || "",
+      subCategoryName:   p.subCategoryName || "",
+      baseCategoryName:  p.baseCategoryName || "",
+      openingStock, currentStock, consumption, closingStock,
+      reorderLevel:      p.reorderLevel || 0,
+    };
   });
 
   return sendSuccess(res, rows);

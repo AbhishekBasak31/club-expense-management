@@ -78,16 +78,19 @@ export const uploadDocument = multer({
   },
 });
 
-const LOCAL_UPLOAD_DIR = path.join(process.cwd(), "uploads", "checklists");
 
-function ensureLocalDir() {
-  if (!fs.existsSync(LOCAL_UPLOAD_DIR)) fs.mkdirSync(LOCAL_UPLOAD_DIR, { recursive: true });
-}
 
 // Saves req.file (populated by uploadDocument.single('document')) to
-// whichever backend is configured, and returns the fields the
-// Checklist document stores. `publicId` is only non-null for
-// Cloudinary — used later to delete/replace the file.
+// whichever backend is configured, and returns the fields the calling
+// document store. `publicId` is only non-null for Cloudinary — used
+// later to delete/replace the file.
+//
+// `folder` — the Cloudinary folder (or local subfolder) this file goes
+// into. Defaults to "clubexpense/checklists" to keep every EXISTING
+// call site (Checklist document upload) working exactly as before
+// without changes; new callers (e.g. Service & Maintenance contract
+// documents) pass their own folder so files from different features
+// don't end up mixed together in the same Cloudinary folder.
 //
 // `originUrl` (e.g. `${req.protocol}://${req.get('host')}`, built by the
 // controller from the live request — never hardcoded here) matters only
@@ -102,13 +105,13 @@ function ensureLocalDir() {
 // of the actual file. Prefixing with the request's real origin makes the
 // browser navigate straight to the backend regardless of what path the
 // frontend happens to be served under.
-export async function storeUploadedFile(file, originUrl) {
+export async function storeUploadedFile(file, originUrl, folder = "clubexpense/checklists") {
   if (!file) throw new Error("No file provided.");
 
   if (hasCloudinary) {
     const result = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
-        { folder: "clubexpense/checklists", resource_type: "auto" },
+        { folder, resource_type: "auto" },
         (err, res) => (err ? reject(err) : resolve(res))
       );
       stream.end(file.buffer);
@@ -120,11 +123,16 @@ export async function storeUploadedFile(file, originUrl) {
     };
   }
 
-  // Local disk fallback
-  ensureLocalDir();
+  // Local disk fallback — subfoldered by the same `folder` value's last
+  // segment, so different features' local-disk fallback files don't
+  // collide either (matters only for local dev without Cloudinary keys
+  // set; see the module-level comment about Render's ephemeral disk).
+  const localSubdir = folder.split("/").pop() || "checklists";
+  const localDir = path.join(process.cwd(), "uploads", localSubdir);
+  if (!fs.existsSync(localDir)) fs.mkdirSync(localDir, { recursive: true });
   const safeName = `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-  fs.writeFileSync(path.join(LOCAL_UPLOAD_DIR, safeName), file.buffer);
-  const relativePath = `/uploads/checklists/${safeName}`;
+  fs.writeFileSync(path.join(localDir, safeName), file.buffer);
+  const relativePath = `/uploads/${localSubdir}/${safeName}`;
   return {
     documentName     : file.originalname,
     documentUrl      : originUrl ? `${originUrl}${relativePath}` : relativePath, // absolute when originUrl is provided — see comment above
@@ -139,13 +147,17 @@ export async function deleteStoredFile({ documentUrl, documentPublicId }) {
   try {
     if (hasCloudinary && documentPublicId) {
       await cloudinary.uploader.destroy(documentPublicId, { resource_type: "auto" });
-    } else if (documentUrl?.includes("/uploads/checklists/")) {
+    } else if (documentUrl?.includes("/uploads/")) {
       // documentUrl may be a full absolute URL (current format, see
       // storeUploadedFile above) or a bare relative path (records saved
       // before that fix) — this handles both by pulling out just the
-      // "/uploads/checklists/xyz.jpg" segment either way, rather than
-      // assuming one specific shape.
-      const relativePath = documentUrl.slice(documentUrl.indexOf("/uploads/checklists/"));
+      // "/uploads/<subfolder>/xyz.jpg" segment either way, rather than
+      // assuming one specific shape. Not hardcoded to "/uploads/checklists/"
+      // any more — storeUploadedFile's local-disk fallback now uses
+      // whichever subfolder that call's `folder` argument maps to, so
+      // deletion has to match against "/uploads/" generically to find
+      // files saved under any of them, not just Checklist's.
+      const relativePath = documentUrl.slice(documentUrl.indexOf("/uploads/"));
       const filePath = path.join(process.cwd(), relativePath);
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     }
