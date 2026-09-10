@@ -48,8 +48,13 @@ export const authenticate = async (req, res, next) => {
     // When a role changes or logout-all is called, tokenVersion is incremented.
     // Old tokens carry the old version and are rejected here instantly,
     // before their 10-minute natural expiry.
+    // Also pulls `role` fresh from the DB on every request — role is
+    // deliberately NOT trusted from the JWT payload, so an admin
+    // demoting someone takes effect immediately without waiting for
+    // token expiry (paired with the tokenVersion bump in
+    // User.controller.js's updateUser, which forces relogin anyway).
     const user = await User.findById(decoded.userId)
-      .select("tokenVersion isActive")
+      .select("tokenVersion isActive role")
       .lean();
 
     if (!user || !user.isActive) {
@@ -66,6 +71,7 @@ export const authenticate = async (req, res, next) => {
       organizationId : decoded.organizationId,
       tier           : decoded.tier,
       roleId         : decoded.roleId,       // null for superadmin/admin
+      role           : user.role,            // 'admin' | 'user' — see requireAdmin below
       tokenVersion   : decoded.tokenVersion,
       sessionId      : decoded.sessionId,
     };
@@ -77,6 +83,43 @@ export const authenticate = async (req, res, next) => {
   } catch (err) {
     console.error("[authenticate]", err.message);
     return deny(res, "Authentication failed.");
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// requireAdmin
+// Gate — restricts a route to users with role === 'admin'.
+// Must run after `authenticate` (needs req.user.role).
+// Used to protect the admin-only User Management endpoints
+// (create/list/update other users) below in User.routes.js.
+// ─────────────────────────────────────────────────────────────────
+export const requireAdmin = (req, res, next) => {
+  if (req.user?.role !== "admin") {
+    return deny(res, "This action requires admin access.", 403);
+  }
+  next();
+};
+
+// ─────────────────────────────────────────────────────────────────
+// bootstrapOrAdmin
+// Gate for POST /register specifically. Registration is only ever
+// public when the database has zero users (first-time setup, so
+// the very first account can be created without already having an
+// admin to approve it). Once at least one user exists, this behaves
+// exactly like `authenticate` + `requireAdmin` — every subsequent
+// account must be created by a logged-in admin. This closes what
+// was otherwise an unauthenticated "create a full-access account"
+// endpoint reachable by anyone once the app has real users.
+// ─────────────────────────────────────────────────────────────────
+export const bootstrapOrAdmin = async (req, res, next) => {
+  try {
+    const count = await User.countDocuments();
+    if (count === 0) return next(); // no users yet — allow open bootstrap registration
+
+    return authenticate(req, res, () => requireAdmin(req, res, next));
+  } catch (err) {
+    console.error("[bootstrapOrAdmin]", err.message);
+    return deny(res, "Registration check failed.", 500);
   }
 };
 

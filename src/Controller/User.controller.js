@@ -45,7 +45,12 @@ const createSession = async (user, req) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// POST /register — create the single full-access user
+// POST /register — gated by bootstrapOrAdmin (see auth.middleware.js):
+// open only when the database has zero users (first-time setup);
+// once any user exists, only a logged-in admin can reach this at all.
+// The very first account created this way is always forced to
+// role: "admin" regardless of what's posted, since there's no admin
+// yet to have granted any other role.
 // ─────────────────────────────────────────────────────────────────
 export const register = async (req, res) => {
   const { name, email, password } = req.body;
@@ -57,8 +62,12 @@ export const register = async (req, res) => {
   const existing = await User.findOne({ email });
   if (existing) return sendError(res, "An account with this email already exists.", 409);
 
+  const isFirstUser = (await User.countDocuments()) === 0;
   const passwordHash = await User.hashPassword(password);
-  const user = await User.create({ name, email, passwordHash, isActive: true });
+  const user = await User.create({
+    name, email, passwordHash, isActive: true,
+    role: isFirstUser ? "admin" : "user",
+  });
 
   return sendSuccess(res, { user: User.sanitize(user) }, "Account created.", 201);
 };
@@ -210,4 +219,92 @@ export const changePassword = async (req, res) => {
   );
 
   return sendSuccess(res, null, "Password changed.");
+};
+
+// ═════════════════════════════════════════════════════════════════
+// ADMIN-ONLY USER MANAGEMENT
+// Every export below is mounted behind `authenticate` + `requireAdmin`
+// in User.routes.js — only an admin can reach these at all.
+// ═════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────
+// GET /users — list every account (admin only)
+// ─────────────────────────────────────────────────────────────────
+export const listUsers = async (req, res) => {
+  const users = await User.find()
+    .select("-passwordHash -tokenVersion")
+    .sort({ createdAt: -1 })
+    .lean();
+  return sendSuccess(res, users);
+};
+
+// ─────────────────────────────────────────────────────────────────
+// POST /users — create a new account (admin only)
+// Unlike /register, the caller here explicitly chooses the new
+// user's role ("admin" or "user").
+// ─────────────────────────────────────────────────────────────────
+export const createUser = async (req, res) => {
+  const { name, email, password, role } = req.body;
+  if (!name || !email || !password)
+    return sendError(res, "Name, email and password are required.");
+  if (password.length < 8)
+    return sendError(res, "Password must be at least 8 characters.");
+  if (role && !["admin", "user"].includes(role))
+    return sendError(res, "Role must be 'admin' or 'user'.");
+
+  const existing = await User.findOne({ email });
+  if (existing) return sendError(res, "An account with this email already exists.", 409);
+
+  const passwordHash = await User.hashPassword(password);
+  const user = await User.create({
+    name, email, passwordHash, isActive: true,
+    role: role || "user",
+  });
+
+  return sendSuccess(res, { user: User.sanitize(user) }, "User created.", 201);
+};
+
+// ─────────────────────────────────────────────────────────────────
+// PATCH /users/:id — edit role / active status / name (admin only)
+//
+// An admin can never demote or deactivate their OWN account through
+// this endpoint — that would either lock them out or (if they're
+// the last admin) leave the app with no admin at all. To change
+// their own role or active status they'd need another admin to do
+// it, or use /me/profile for their own name.
+//
+// Changing role or isActive bumps tokenVersion so any existing
+// session for that user is invalidated immediately rather than
+// waiting for the access token's natural 10-hour expiry.
+// ─────────────────────────────────────────────────────────────────
+export const updateUser = async (req, res) => {
+  const { id } = req.params;
+  const { name, role, isActive } = req.body;
+
+  if (id === req.user.userId.toString() && (role !== undefined || isActive !== undefined)) {
+    return sendError(res, "You cannot change your own role or active status here.", 403);
+  }
+  if (role !== undefined && !["admin", "user"].includes(role)) {
+    return sendError(res, "Role must be 'admin' or 'user'.");
+  }
+
+  const target = await User.findById(id);
+  if (!target) return sendError(res, "User not found.", 404);
+
+  // Guard: don't allow demoting/deactivating the last remaining admin.
+  if (target.role === "admin" && (role === "user" || isActive === false)) {
+    const otherAdmins = await User.countDocuments({ role: "admin", _id: { $ne: id } });
+    if (otherAdmins === 0) {
+      return sendError(res, "Cannot remove the last remaining admin.", 400);
+    }
+  }
+
+  if (name !== undefined) target.name = name.trim();
+  if (role !== undefined) target.role = role;
+  if (isActive !== undefined) target.isActive = isActive;
+
+  if (role !== undefined || isActive !== undefined) target.tokenVersion += 1;
+
+  await target.save();
+  return sendSuccess(res, User.sanitize(target), "User updated.");
 };

@@ -3,9 +3,12 @@ import bcrypt    from "bcrypt";
 import jwt       from "jsonwebtoken";
 
 // ─────────────────────────────────────────────────────────────────
-// USER MODEL — single user, full access.
-// No tier, no role, no permissions. Just login credentials.
-// (Multi-user RBAC can be added later without breaking this.)
+// USER MODEL
+// Flat, single-collection user store — no organizations, no tiers.
+// `role` is the only access-level distinction: 'admin' can manage
+// other users via /users routes (admin-only), 'user' cannot.
+// (Finer-grained per-module permissions can be added later without
+// breaking this — role stays the top-level gate.)
 // ─────────────────────────────────────────────────────────────────
 const UserSchema = new mongoose.Schema(
   {
@@ -13,7 +16,13 @@ const UserSchema = new mongoose.Schema(
     email        : { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash : { type: String, required: true },
 
-    // Increment to invalidate all tokens (password change / logout-all)
+    // 'admin' can create/list/edit other users (see User.routes.js
+    // /users endpoints, gated by requireAdmin). 'user' is a normal
+    // login with full app access but no user-management rights.
+    role         : { type: String, enum: ["admin", "user"], default: "user" },
+
+    // Increment to invalidate all tokens (password change / logout-all /
+    // role or active-status change by an admin)
     tokenVersion : { type: Number, default: 0 },
 
     isActive     : { type: Boolean, default: true },
@@ -54,6 +63,7 @@ UserSchema.statics.sanitize = function (user) {
     id        : user._id,
     name      : user.name,
     email     : user.email,
+    role      : user.role,
     isActive  : user.isActive,
     lastLogin : user.lastLogin,
   };
