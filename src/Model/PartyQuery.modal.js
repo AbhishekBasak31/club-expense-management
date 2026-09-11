@@ -6,10 +6,17 @@ import mongoose from "mongoose";
 //   pending ──accept──> accepted ──(advance paid)──> RFP generated
 //     └──reject──> rejected [terminal — nothing else happens on this query]
 //
-//   RFP generated ──approve──> RFP approved ──send──> RFP shared [terminal]
+//   RFP generated ──approve──> RFP approved ──send──> RFP shared
 //                └──reject──> back to "generated" (can be regenerated/
 //                             resubmitted for approval — never a dead end,
 //                             unlike the party-level reject above)
+//
+//   RFP shared ──close cycle (final value recorded)──> closed [terminal]
+//
+// paymentStatus (pending/partial/paid) tracks the client's own payment
+// for the party — separate from `advance` (the booking deposit) and
+// from the status workflow above — and can be updated independently at
+// any point the party isn't rejected.
 //
 // The RFP itself lives EMBEDDED on the party query document (RfpSchema
 // below), not as a separate collection — there is exactly one RFP per
@@ -152,14 +159,27 @@ const PartyQuerySchema = new mongoose.Schema(
     phone: { type: String, trim: true, required: true },
 
     pack: { type: String, trim: true, default: "" },
+    occasion: { type: String, trim: true, default: "" },
     packageBrochure: { type: String, trim: true, default: "" },
     remark: { type: String, trim: true, default: "" },
     rate: { type: Number, default: 0 },
 
-    status: { type: String, enum: ["pending", "accepted", "rejected"], default: "pending" },
+    // 'closed' is reached only via the dedicated close-cycle endpoint,
+    // once rfpStatus === 'shared' — never set directly through the
+    // generic update endpoint. finalValue/closedAt are only ever
+    // populated by that same endpoint.
+    status: { type: String, enum: ["pending", "accepted", "rejected", "closed"], default: "pending" },
+    finalValue: { type: Number, default: 0, min: 0 },
+    closedAt: { type: Date, default: null },
+
     concernPerson: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
     advance: { type: AdvanceSchema, default: () => ({}) },
+
+    // Tracks the client's own payment for the party (separate from the
+    // advance, which is just the booking deposit) — updated independently
+    // via its own endpoint, any time the party isn't rejected.
+    paymentStatus: { type: String, enum: ["pending", "partial", "paid"], default: "pending" },
 
     rfpStatus: { type: String, enum: ["not_generated", "generated", "approved", "rejected", "shared"], default: "not_generated" },
     rfp: { type: RfpSchema, default: null },
@@ -174,6 +194,7 @@ const PartyQuerySchema = new mongoose.Schema(
 PartyQuerySchema.index({ date: 1 });
 PartyQuerySchema.index({ status: 1 });
 PartyQuerySchema.index({ rfpStatus: 1 });
+PartyQuerySchema.index({ paymentStatus: 1 });
 PartyQuerySchema.index({ isActive: 1 });
 
 export const PartyQuery = mongoose.model("PartyQuery", PartyQuerySchema);

@@ -21,8 +21,13 @@ export const createPartyQuery = async (req, res) => {
   if (!email?.trim()) return sendError(res, "Email is required.");
   if (!phone?.trim()) return sendError(res, "Phone number is required.");
 
+  // status/finalValue/closedAt/paymentStatus are server-controlled — a new
+  // query always starts pending/₹0/not-closed/payment-pending regardless
+  // of what's in the request body.
+  const { status, rfpStatus, finalValue, closedAt, paymentStatus, ...safeBody } = req.body;
+
   const doc = await PartyQuery.create({
-    ...req.body,
+    ...safeBody,
     status: "pending",
     rfpStatus: "not_generated",
     concernPerson: req.user?.userId ?? null,
@@ -64,13 +69,17 @@ export const getPartyQueryById = async (req, res) => {
 };
 
 // Edits to the base query fields (date/time/client details/pack/rate/
-// remark) — allowed any time before the party itself is rejected.
+// remark/occasion) — allowed any time before the party is rejected or
+// closed (both are terminal from the base-edit form's point of view;
+// status/finalValue/closedAt/paymentStatus each have their own
+// dedicated endpoint below and are never touched here).
 export const updatePartyQuery = async (req, res) => {
   const existing = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!existing) return sendError(res, "Party query not found.", 404);
   if (existing.status === "rejected") return sendError(res, "This party query was rejected and can no longer be edited.");
+  if (existing.status === "closed") return sendError(res, "This party query is closed and can no longer be edited.");
 
-  const { status, rfpStatus, advance, rfp, concernPerson, ...safeBody } = req.body;
+  const { status, rfpStatus, advance, rfp, concernPerson, finalValue, closedAt, paymentStatus, ...safeBody } = req.body;
   const doc = await PartyQuery.findByIdAndUpdate(
     req.params.id,
     { $set: { ...safeBody, updatedBy: req.user?.userId ?? null } },
@@ -94,7 +103,7 @@ export const updatePartyQueryStatus = async (req, res) => {
 
   doc.status = action === "accept" ? "accepted" : "rejected";
   doc.updatedBy = req.user?.userId ?? null;
-  await doc.save();
+  await doc.save({ validateModifiedOnly: true });
   return sendSuccess(res, doc, `Party query ${doc.status}.`);
 };
 
@@ -111,7 +120,7 @@ export const updateAdvance = async (req, res) => {
 
   doc.advance = { amount: Number(amount), paymentType };
   doc.updatedBy = req.user?.userId ?? null;
-  await doc.save();
+  await doc.save({ validateModifiedOnly: true });
   return sendSuccess(res, doc, "Advance payment recorded.");
 };
 
@@ -137,7 +146,7 @@ export const saveRfp = async (req, res) => {
   doc.rfp.approvedAt = null;
   doc.rfpStatus = "generated";
   doc.updatedBy = req.user?.userId ?? null;
-  await doc.save();
+  await doc.save({ validateModifiedOnly: true });
   return sendSuccess(res, doc, "RFP saved.");
 };
 
@@ -162,7 +171,7 @@ export const updateRfpStatus = async (req, res) => {
     doc.rfpStatus = "rejected";
   }
   doc.updatedBy = req.user?.userId ?? null;
-  await doc.save();
+  await doc.save({ validateModifiedOnly: true });
   return sendSuccess(res, doc, `RFP ${doc.rfpStatus}.`);
 };
 
@@ -190,8 +199,53 @@ export const sendRfp = async (req, res) => {
   doc.rfpStatus = "shared";
   doc.rfp.sharedAt = new Date();
   doc.updatedBy = req.user?.userId ?? null;
-  await doc.save();
+  await doc.save({ validateModifiedOnly: true });
   return sendSuccess(res, doc, "RFP sent to client.");
+};
+
+// PUT /:id/close  { finalValue }
+// Only valid once status === 'accepted' AND rfpStatus === 'shared' — i.e.
+// the full booking → RFP → send-to-client cycle has actually completed.
+// Setting finalValue and flipping status to 'closed' happen together as
+// one action (per the requested workflow: entering the final value IS
+// what closes the cycle) — there's no separate "set final value" step.
+// 'closed' is terminal: updatePartyQuery above already refuses to edit a
+// closed query, and every other action's own status/rfpStatus check
+// naturally disables itself once status is no longer 'accepted'.
+export const closeCycle = async (req, res) => {
+  const { finalValue } = req.body;
+  if (finalValue == null || Number(finalValue) <= 0) return sendError(res, "A valid final value is required.");
+
+  const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
+  if (!doc) return sendError(res, "Party query not found.", 404);
+  if (doc.status !== "accepted") return sendError(res, `Only an accepted party query can be closed (currently: ${doc.status}).`);
+  if (doc.rfpStatus !== "shared") return sendError(res, `The RFP must be shared with the client before the cycle can be closed (currently: ${doc.rfpStatus}).`);
+
+  doc.finalValue = Number(finalValue);
+  doc.status = "closed";
+  doc.closedAt = new Date();
+  doc.updatedBy = req.user?.userId ?? null;
+  await doc.save({ validateModifiedOnly: true });
+  return sendSuccess(res, doc, "Party cycle closed.");
+};
+
+// PUT /:id/payment-status  { paymentStatus: 'pending' | 'partial' | 'paid' }
+// Tracks the CLIENT's payment for the party — independent of the
+// `advance` (booking deposit) and independent of the status workflow.
+// Can be updated at any point except on a rejected query, since there's
+// nothing left to collect payment for once a query is rejected.
+export const updatePaymentStatus = async (req, res) => {
+  const { paymentStatus } = req.body;
+  if (!["pending", "partial", "paid"].includes(paymentStatus)) return sendError(res, "paymentStatus must be 'pending', 'partial', or 'paid'.");
+
+  const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
+  if (!doc) return sendError(res, "Party query not found.", 404);
+  if (doc.status === "rejected") return sendError(res, "Payment status can't be tracked on a rejected party query.");
+
+  doc.paymentStatus = paymentStatus;
+  doc.updatedBy = req.user?.userId ?? null;
+  await doc.save({ validateModifiedOnly: true });
+  return sendSuccess(res, doc, "Payment status updated.");
 };
 
 function renderRfpEmailHtml(doc) {
