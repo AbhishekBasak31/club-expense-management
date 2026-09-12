@@ -24,7 +24,7 @@ export const createPartyQuery = async (req, res) => {
   // status/finalValue/closedAt/paymentStatus are server-controlled — a new
   // query always starts pending/₹0/not-closed/payment-pending regardless
   // of what's in the request body.
-  const { status, rfpStatus, finalValue, closedAt, paymentStatus, ...safeBody } = req.body;
+  const { status, rfpStatus, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, ...safeBody } = req.body;
 
   const doc = await PartyQuery.create({
     ...safeBody,
@@ -79,7 +79,7 @@ export const updatePartyQuery = async (req, res) => {
   if (existing.status === "rejected") return sendError(res, "This party query was rejected and can no longer be edited.");
   if (existing.status === "closed") return sendError(res, "This party query is closed and can no longer be edited.");
 
-  const { status, rfpStatus, advance, rfp, concernPerson, finalValue, closedAt, paymentStatus, ...safeBody } = req.body;
+  const { status, rfpStatus, advance, rfp, concernPerson, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, ...safeBody } = req.body;
   const doc = await PartyQuery.findByIdAndUpdate(
     req.params.id,
     { $set: { ...safeBody, updatedBy: req.user?.userId ?? null } },
@@ -203,25 +203,39 @@ export const sendRfp = async (req, res) => {
   return sendSuccess(res, doc, "RFP sent to client.");
 };
 
-// PUT /:id/close  { finalValue }
+// PUT /:id/close  { actual, alacarteAmount, discount }
 // Only valid once status === 'accepted' AND rfpStatus === 'shared' — i.e.
 // the full booking → RFP → send-to-client cycle has actually completed.
-// Setting finalValue and flipping status to 'closed' happen together as
-// one action (per the requested workflow: entering the final value IS
-// what closes the cycle) — there's no separate "set final value" step.
-// 'closed' is terminal: updatePartyQuery above already refuses to edit a
-// closed query, and every other action's own status/rfpStatus check
-// naturally disables itself once status is no longer 'accepted'.
+// Grand Total (actual * rate + alacarteAmount) isn't stored — it's cheap
+// to recompute from actual/alacarteAmount wherever it's needed (same as
+// Budget already is). finalValue IS stored, as Grand Total - discount,
+// floored at 0 — and it's ALWAYS server-recalculated from these three
+// inputs, never trusted from the client, same principle already used for
+// PLStatement's gstAmount/finalAmount. Setting these and flipping status
+// to 'closed' happen together as one action — there's no separate "set
+// final value" step. 'closed' is terminal: updatePartyQuery above already
+// refuses to edit a closed query, and every other action's own
+// status/rfpStatus check naturally disables itself once status is no
+// longer 'accepted'.
 export const closeCycle = async (req, res) => {
-  const { finalValue } = req.body;
-  if (finalValue == null || Number(finalValue) <= 0) return sendError(res, "A valid final value is required.");
+  const { actual, alacarteAmount, discount } = req.body;
+  if (actual == null || Number(actual) <= 0) return sendError(res, "A valid actual guest count is required.");
+  const alacarte = Number(alacarteAmount) || 0;
+  if (alacarte < 0) return sendError(res, "Alacarte amount can't be negative.");
+  const disc = Number(discount) || 0;
+  if (disc < 0) return sendError(res, "Discount can't be negative.");
 
   const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!doc) return sendError(res, "Party query not found.", 404);
   if (doc.status !== "accepted") return sendError(res, `Only an accepted party query can be closed (currently: ${doc.status}).`);
   if (doc.rfpStatus !== "shared") return sendError(res, `The RFP must be shared with the client before the cycle can be closed (currently: ${doc.rfpStatus}).`);
+  if (!doc.rate) return sendError(res, "This party query has no Rate set, so Total (Actual × Rate) can't be calculated — set a Rate via Edit first.");
 
-  doc.finalValue = Number(finalValue);
+  const grandTotal = (Number(actual) * doc.rate) + alacarte; // Total + Alacarte
+  doc.actual = Number(actual);
+  doc.alacarteAmount = alacarte;
+  doc.discount = disc;
+  doc.finalValue = Math.max(grandTotal - disc, 0);
   doc.status = "closed";
   doc.closedAt = new Date();
   doc.updatedBy = req.user?.userId ?? null;
@@ -229,20 +243,27 @@ export const closeCycle = async (req, res) => {
   return sendSuccess(res, doc, "Party cycle closed.");
 };
 
-// PUT /:id/payment-status  { paymentStatus: 'pending' | 'partial' | 'paid' }
+// PUT /:id/payment-status  { paymentStatus: 'pending' | 'partial' | 'paid', paymentAmount }
 // Tracks the CLIENT's payment for the party — independent of the
 // `advance` (booking deposit) and independent of the status workflow.
 // Can be updated at any point except on a rejected query, since there's
 // nothing left to collect payment for once a query is rejected.
+// paymentAmount SETS the running total paid to date (it does not add to
+// a previous value) — this call represents "as of now, this much has
+// been paid in total", which the frontend uses to compute Due Amount
+// (finalValue - paidAmount, floored at 0) once the party is closed.
 export const updatePaymentStatus = async (req, res) => {
-  const { paymentStatus } = req.body;
+  const { paymentStatus, paymentAmount } = req.body;
   if (!["pending", "partial", "paid"].includes(paymentStatus)) return sendError(res, "paymentStatus must be 'pending', 'partial', or 'paid'.");
+  const paid = Number(paymentAmount) || 0;
+  if (paid < 0) return sendError(res, "Payment amount can't be negative.");
 
   const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!doc) return sendError(res, "Party query not found.", 404);
   if (doc.status === "rejected") return sendError(res, "Payment status can't be tracked on a rejected party query.");
 
   doc.paymentStatus = paymentStatus;
+  doc.paidAmount = paid;
   doc.updatedBy = req.user?.userId ?? null;
   await doc.save({ validateModifiedOnly: true });
   return sendSuccess(res, doc, "Payment status updated.");

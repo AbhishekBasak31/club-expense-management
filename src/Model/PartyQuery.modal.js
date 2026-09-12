@@ -78,7 +78,8 @@ const RfpSchema = new mongoose.Schema(
     salesRepresentative: { type: String, trim: true, default: "" },
     typeOfFunction: { type: String, trim: true, default: "" },
     note: { type: String, trim: true, default: "" },
-    partyHostNameAddress: { type: String, trim: true, default: "" },
+    partyHostName: { type: String, trim: true, default: "" },
+    partyHostAddress: { type: String, trim: true, default: "" },
     billingInstruction: { type: String, trim: true, default: "" },
     email: { type: String, trim: true, lowercase: true, default: "" },
     landlineNumber: { type: String, trim: true, default: "" },
@@ -169,6 +170,17 @@ const PartyQuerySchema = new mongoose.Schema(
     // generic update endpoint. finalValue/closedAt are only ever
     // populated by that same endpoint.
     status: { type: String, enum: ["pending", "accepted", "rejected", "closed"], default: "pending" },
+    // Set together, only by closeCycle in the controller: actual (guest
+    // headcount who attended), alacarteAmount, and discount are the real
+    // inputs; finalValue is always server-recalculated from
+    // (actual * rate + alacarteAmount) - discount — never trusted from
+    // the client, same principle already used for PLStatement's
+    // gstAmount/finalAmount. Grand Total itself (actual*rate+alacarteAmount,
+    // pre-discount) isn't stored separately — it's cheap to recompute from
+    // these same three fields wherever it's needed, same as Budget already is.
+    actual: { type: Number, default: 0, min: 0 },
+    alacarteAmount: { type: Number, default: 0, min: 0 },
+    discount: { type: Number, default: 0, min: 0 },
     finalValue: { type: Number, default: 0, min: 0 },
     closedAt: { type: Date, default: null },
 
@@ -178,8 +190,11 @@ const PartyQuerySchema = new mongoose.Schema(
 
     // Tracks the client's own payment for the party (separate from the
     // advance, which is just the booking deposit) — updated independently
-    // via its own endpoint, any time the party isn't rejected.
+    // via its own endpoint, any time the party isn't rejected. paidAmount
+    // is set together with paymentStatus by that same endpoint; due amount
+    // (finalValue - paidAmount, floored at 0) is computed on read, never stored.
     paymentStatus: { type: String, enum: ["pending", "partial", "paid"], default: "pending" },
+    paidAmount: { type: Number, default: 0, min: 0 },
 
     rfpStatus: { type: String, enum: ["not_generated", "generated", "approved", "rejected", "shared"], default: "not_generated" },
     rfp: { type: RfpSchema, default: null },
