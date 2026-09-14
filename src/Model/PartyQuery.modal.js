@@ -3,8 +3,11 @@ import mongoose from "mongoose";
 // ─────────────────────────────────────────────────────────────────
 // PartyQuery — a booking enquiry that moves through a fixed workflow:
 //
-//   pending ──accept──> accepted ──(advance paid)──> RFP generated
+//   pending ──accept──> accepted ──> RFP generated
 //     └──reject──> rejected [terminal — nothing else happens on this query]
+//   (advance can be recorded any time once accepted, but it's optional —
+//   not every party pays one in practice, and it's no longer required
+//   before an RFP can be generated)
 //
 //   RFP generated ──approve──> RFP approved ──send──> RFP shared
 //                └──reject──> back to "generated" (can be regenerated/
@@ -151,13 +154,20 @@ const RfpSchema = new mongoose.Schema(
 
 const PartyQuerySchema = new mongoose.Schema(
   {
-    date: { type: Date, required: true },
-    timeRangeStart: { type: String, trim: true, required: true },
-    timeRangeEnd: { type: String, trim: true, required: true },
+    // Nothing below is mandatory at the schema level (relaxed on request,
+    // for bulk/Excel import) — rows can be saved incomplete and filled in
+    // later via Edit, rather than the whole row being rejected because one
+    // field is missing. The single "Add Party Query" form on the frontend
+    // still asks for these before submitting on its own — this only
+    // affects bulk import and any other path that creates a query with
+    // some fields blank.
+    date: { type: Date, default: null },
+    timeRangeStart: { type: String, trim: true, default: "" },
+    timeRangeEnd: { type: String, trim: true, default: "" },
 
-    name: { type: String, trim: true, required: true },
-    email: { type: String, trim: true, lowercase: true, required: true },
-    phone: { type: String, trim: true, required: true },
+    name: { type: String, trim: true, default: "" },
+    email: { type: String, trim: true, lowercase: true, default: "" },
+    phone: { type: String, trim: true, default: "" },
 
     pack: { type: String, trim: true, default: "" },
     occasion: { type: String, trim: true, default: "" },

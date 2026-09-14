@@ -6,28 +6,35 @@ import { sendRfpEmail } from "../Utils/Mailer.js";
 // Workflow enforced here (not just implied by the frontend disabling
 // buttons — every transition is re-checked server-side):
 //
-//   status: pending → accepted → (advance set) → rfp generated
+//   status: pending → accepted → rfp generated
 //                   → rejected [terminal — every RFP action blocked]
+//   (advance can be recorded any time after acceptance, but is optional
+//   and no longer a precondition for generating an RFP)
 //
 //   rfpStatus: not_generated → generated ⇄ rejected (editable, can be
 //              resubmitted) → approved → shared [terminal]
 // ─────────────────────────────────────────────────────────────────
 
 export const createPartyQuery = async (req, res) => {
-  const { date, timeRangeStart, timeRangeEnd, name, email, phone } = req.body;
-  if (!date) return sendError(res, "Date is required.");
-  if (!timeRangeStart || !timeRangeEnd) return sendError(res, "Time range start and end are required.");
-  if (!name?.trim()) return sendError(res, "Name is required.");
-  if (!email?.trim()) return sendError(res, "Email is required.");
-  if (!phone?.trim()) return sendError(res, "Phone number is required.");
-
+  // No fields are mandated here anymore (relaxed on request, so bulk/Excel
+  // import rows can be saved incomplete and filled in later via Edit — see
+  // the matching change on the schema). The single "Add Party Query" form
+  // still checks for these client-side before it ever calls this endpoint.
+  //
   // status/finalValue/closedAt/paymentStatus are server-controlled — a new
   // query always starts pending/₹0/not-closed/payment-pending regardless
   // of what's in the request body.
-  const { status, rfpStatus, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, ...safeBody } = req.body;
+  const { status, rfpStatus, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, date, ...safeBody } = req.body;
+
+  // An empty/invalid date string must become null, not be handed straight
+  // to Mongoose's Date cast — "" fails that cast even though `date` is no
+  // longer a required field.
+  const parsedDate = date ? new Date(date) : null;
+  const cleanDate = parsedDate && !isNaN(parsedDate.getTime()) ? parsedDate : null;
 
   const doc = await PartyQuery.create({
     ...safeBody,
+    date: cleanDate,
     status: "pending",
     rfpStatus: "not_generated",
     concernPerson: req.user?.userId ?? null,
@@ -125,15 +132,19 @@ export const updateAdvance = async (req, res) => {
 };
 
 // PUT /:id/rfp — create OR edit the RFP draft. Valid once status ===
-// 'accepted' and advance has been recorded; valid at any point before
-// rfpStatus === 'shared' (so a 'generated' or even 'rejected' draft can
-// still be edited and resubmitted — only 'shared' is a hard stop, since
-// the client has already received it by then).
+// 'accepted'; valid at any point before rfpStatus === 'shared' (so a
+// 'generated' or even 'rejected' draft can still be edited and
+// resubmitted — only 'shared' is a hard stop, since the client has
+// already received it by then). Advance payment is NOT required to
+// create an RFP — in practice some parties never pay one; recording an
+// advance (see updateAdvance above) stays available any time after
+// acceptance but is no longer a precondition here. No field on the RFP
+// itself is mandatory either — it can be saved as a partial draft and
+// filled in over time.
 export const saveRfp = async (req, res) => {
   const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!doc) return sendError(res, "Party query not found.", 404);
-  if (doc.status !== "accepted") return sendError(res, "The party query must be accepted, with advance recorded, before an RFP can be created.");
-  if (!doc.advance?.amount) return sendError(res, "Record the advance payment before creating an RFP.");
+  if (doc.status !== "accepted") return sendError(res, "The party query must be accepted before an RFP can be created.");
   if (doc.rfpStatus === "shared") return sendError(res, "This RFP has already been shared with the client and can no longer be edited.");
 
   const { approvedBy, generatedAt, approvedAt, sharedAt, ...safeRfpBody } = req.body;
