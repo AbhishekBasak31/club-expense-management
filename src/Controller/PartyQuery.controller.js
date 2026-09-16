@@ -24,7 +24,7 @@ export const createPartyQuery = async (req, res) => {
   // status/finalValue/closedAt/paymentStatus are server-controlled — a new
   // query always starts pending/₹0/not-closed/payment-pending regardless
   // of what's in the request body.
-  const { status, rfpStatus, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, date, ...safeBody } = req.body;
+  const { status, rfpStatus, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, date, guestList, billing, paymentHistory, closeRemark, closeRating, cancelled, cancellationReason, cancellationAmount, refundAmount, ...safeBody } = req.body;
 
   // An empty/invalid date string must become null, not be handed straight
   // to Mongoose's Date cast — "" fails that cast even though `date` is no
@@ -86,7 +86,7 @@ export const updatePartyQuery = async (req, res) => {
   if (existing.status === "rejected") return sendError(res, "This party query was rejected and can no longer be edited.");
   if (existing.status === "closed") return sendError(res, "This party query is closed and can no longer be edited.");
 
-  const { status, rfpStatus, advance, rfp, concernPerson, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, ...safeBody } = req.body;
+  const { status, rfpStatus, advance, rfp, concernPerson, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, guestList, billing, paymentHistory, closeRemark, closeRating, cancelled, cancellationReason, cancellationAmount, refundAmount, ...safeBody } = req.body;
   const doc = await PartyQuery.findByIdAndUpdate(
     req.params.id,
     { $set: { ...safeBody, updatedBy: req.user?.userId ?? null } },
@@ -214,44 +214,205 @@ export const sendRfp = async (req, res) => {
   return sendSuccess(res, doc, "RFP sent to client.");
 };
 
-// PUT /:id/close  { actual, alacarteAmount, discount }
-// Only valid once status === 'accepted' AND rfpStatus === 'shared' — i.e.
-// the full booking → RFP → send-to-client cycle has actually completed.
-// Grand Total (actual * rate + alacarteAmount) isn't stored — it's cheap
-// to recompute from actual/alacarteAmount wherever it's needed (same as
-// Budget already is). finalValue IS stored, as Grand Total - discount,
-// floored at 0 — and it's ALWAYS server-recalculated from these three
-// inputs, never trusted from the client, same principle already used for
-// PLStatement's gstAmount/finalAmount. Setting these and flipping status
-// to 'closed' happen together as one action — there's no separate "set
-// final value" step. 'closed' is terminal: updatePartyQuery above already
-// refuses to edit a closed query, and every other action's own
-// status/rfpStatus check naturally disables itself once status is no
-// longer 'accepted'.
+const GST_RATE = 0.18; // 18% GST, flat, on every one of the 4 billing tables
+
+// PUT /:id/guest-list  { guestList: [{ name, count, phone }] }
+// Only valid once an RFP has actually been generated (rfpStatus !==
+// 'not_generated') — this is the first step of the post-RFP cycle. The
+// "+N" suffix convention (e.g. "Rahul +1" → count 2) is parsed on the
+// frontend before this ever reaches here; this endpoint just stores
+// whatever {name, count, phone} rows it's given. Replaces the whole list
+// each call (not additive) — this is also how "Edit" resubmits after a
+// correction.
+export const saveGuestList = async (req, res) => {
+  const { guestList } = req.body;
+  if (!Array.isArray(guestList) || guestList.length === 0) return sendError(res, "At least one guest is required.");
+
+  const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
+  if (!doc) return sendError(res, "Party query not found.", 404);
+  if (doc.rfpStatus === "not_generated") return sendError(res, "The RFP must be generated before the guest list can be captured.");
+
+  const cleaned = guestList
+    .filter(g => g?.name?.toString().trim())
+    .map(g => ({
+      name: g.name.toString().trim(),
+      count: Number(g.count) > 0 ? Math.floor(Number(g.count)) : 1,
+      phone: (g.phone || "").toString().trim(),
+    }));
+  if (cleaned.length === 0) return sendError(res, "At least one guest with a name is required.");
+
+  doc.guestList = cleaned;
+  doc.updatedBy = req.user?.userId ?? null;
+  await doc.save({ validateModifiedOnly: true });
+  return sendSuccess(res, doc, "Guest list saved.");
+};
+
+// PUT /:id/billing  { mg, actual, billingRate, alacarteAmount, photographyAmount, decorAmount, discount }
+// Only valid once the guest list has been captured. Every GST amount and
+// every *Total figure is ALWAYS server-recalculated at 18% flat — never
+// trusted from the client, same principle used everywhere else in this
+// file. finalPartyValue = grandTotal (sum of the 4 table totals) minus
+// discount, floored at 0. Also keeps the legacy top-level
+// actual/alacarteAmount/discount/finalValue fields in sync, purely so
+// anything still reading those directly doesn't see stale data — the new
+// UI reads from `billing` itself.
+export const saveBilling = async (req, res) => {
+  const {
+    mg, actual, billingRate, alacarteAmount, photographyAmount, decorAmount, discount,
+    mainGstEnabled, alacarteGstEnabled, photographyGstEnabled, decorGstEnabled,
+  } = req.body;
+
+  const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
+  if (!doc) return sendError(res, "Party query not found.", 404);
+  if (!doc.guestList?.length) return sendError(res, "The guest list must be captured before billing.");
+
+  const mgN = Number(mg) || 0;
+  const actualN = Number(actual) || 0;
+  const rateN = Number(billingRate) || 0;
+  const alacarteN = Number(alacarteAmount) || 0;
+  const photoN = Number(photographyAmount) || 0;
+  const decorN = Number(decorAmount) || 0;
+  const discN = Number(discount) || 0;
+  if ([mgN, actualN, rateN, alacarteN, photoN, decorN, discN].some(n => n < 0)) {
+    return sendError(res, "None of the billing figures can be negative.");
+  }
+  // Each table's GST checkbox — GST is only computed (and included in that
+  // table's total) when its flag is true; otherwise the GST amount is 0.
+  const mainGstOn = mainGstEnabled !== false;
+  const alacarteGstOn = alacarteGstEnabled !== false;
+  const photographyGstOn = photographyGstEnabled !== false;
+  const decorGstOn = decorGstEnabled !== false;
+
+  const mainAmount = actualN * rateN;
+  const mainGst = mainGstOn ? Math.round(mainAmount * GST_RATE) : 0;
+  const mainTotal = mainAmount + mainGst;
+
+  const alacarteGst = alacarteGstOn ? Math.round(alacarteN * GST_RATE) : 0;
+  const alacarteTotal = alacarteN + alacarteGst;
+
+  const photographyGst = photographyGstOn ? Math.round(photoN * GST_RATE) : 0;
+  const photographyTotal = photoN + photographyGst;
+
+  const decorGst = decorGstOn ? Math.round(decorN * GST_RATE) : 0;
+  const decorTotal = decorN + decorGst;
+
+  const grandTotal = mainTotal + alacarteTotal + photographyTotal + decorTotal;
+  const finalPartyValue = Math.max(grandTotal - discN, 0);
+
+  doc.billing = {
+    mg: mgN, actual: actualN, billingRate: rateN, mainAmount, mainGstEnabled: mainGstOn, mainGst, mainTotal,
+    alacarteAmount: alacarteN, alacarteGstEnabled: alacarteGstOn, alacarteGst, alacarteTotal,
+    photographyAmount: photoN, photographyGstEnabled: photographyGstOn, photographyGst, photographyTotal,
+    decorAmount: decorN, decorGstEnabled: decorGstOn, decorGst, decorTotal,
+    grandTotal, discount: discN, finalPartyValue, savedAt: new Date(),
+  };
+  // Legacy mirrors — see comment above.
+  doc.actual = actualN;
+  doc.alacarteAmount = alacarteN;
+  doc.discount = discN;
+  doc.finalValue = finalPartyValue;
+  doc.updatedBy = req.user?.userId ?? null;
+  await doc.save({ validateModifiedOnly: true });
+  return sendSuccess(res, doc, "Billing saved.");
+};
+
+// POST /:id/payment  { amount, method, kind: 'advance' | 'final', note?, date? }
+// Appends one entry to the payment ledger — never edits or removes a
+// past entry; a correction is a new entry, not a rewrite of history.
+// A 'final' entry requires billing to already be saved (there's nothing
+// to be "payable" against otherwise). After appending, paidAmount and
+// paymentStatus are recomputed from the FULL ledger (advance + final
+// entries together) — and, for backward compatibility with the older
+// single-shot `advance` field/column, that field is kept mirroring the
+// running total of just the 'advance'-kind entries.
+export const addPaymentEntry = async (req, res) => {
+  const { amount, method, kind, note, date } = req.body;
+  const amt = Number(amount);
+  if (!amt || amt <= 0) return sendError(res, "A valid payment amount is required.");
+  if (!["cash", "card", "upi", "net_banking"].includes(method)) return sendError(res, "A valid payment method is required.");
+  if (!["advance", "final"].includes(kind)) return sendError(res, "kind must be 'advance' or 'final'.");
+
+  const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
+  if (!doc) return sendError(res, "Party query not found.", 404);
+  if (doc.status === "rejected") return sendError(res, "Payments can't be recorded on a rejected party query.");
+  if (kind === "final" && !doc.billing?.finalPartyValue) return sendError(res, "Billing must be saved before recording the final payment.");
+
+  doc.paymentHistory.push({
+    date: date ? new Date(date) : new Date(),
+    amount: amt, method, kind, note: (note || "").toString().trim(),
+  });
+
+  const advanceTotal = doc.paymentHistory.filter(p => p.kind === "advance").reduce((s, p) => s + p.amount, 0);
+  const paidTotal = doc.paymentHistory.reduce((s, p) => s + p.amount, 0);
+  doc.advance = { amount: advanceTotal, paymentType: method };
+  doc.paidAmount = paidTotal;
+  doc.paymentStatus = doc.billing?.finalPartyValue && paidTotal >= doc.billing.finalPartyValue ? "paid" : paidTotal > 0 ? "partial" : "pending";
+  doc.updatedBy = req.user?.userId ?? null;
+  await doc.save({ validateModifiedOnly: true });
+  return sendSuccess(res, doc, "Payment recorded.");
+};
+
+// PUT /:id/close  { remark }
+// Only valid once status === 'accepted', rfpStatus === 'shared', AND
+// billing has been saved (finalPartyValue > 0) — guest list and payment
+// are expected to have happened by this point in the UI flow, but aren't
+// re-validated here beyond billing; a party can be closed with a
+// remaining due amount (dueAmount is just finalPartyValue − paidAmount,
+// computed on read, not a close-time gate). Remark is the only field
+// this step itself captures — everything financial was already captured
+// by saveBilling/addPaymentEntry before this.
+// PUT /:id/close  { remark, rating?, cancelled?, cancellationReason?, cancellationAmount? }
+// Only requires status === 'accepted' (not already closed/rejected) — this
+// is a "close this party out, whatever state it's in" action, not gated on
+// the RFP having been shared or billing having been saved. The one
+// exception: a NON-cancelled close still needs billing.finalPartyValue set,
+// since that's the number Due/Paid are computed against — a cancelled
+// close doesn't need that, because cancelling SETS finalPartyValue itself.
+//
+// Cancellation: cancellationAmount is the fee actually charged, always
+// server-computed/clamped, never trusted as-is from the client. If no
+// advance was ever collected there's nothing to charge a fee against, so
+// the fee is forced to 0 regardless of what was submitted. Otherwise the
+// fee is whatever was submitted (including 0, for the "waive it entirely"
+// case) — refundAmount is simply whatever's left of the advance after
+// that fee. finalPartyValue is overwritten to equal the fee, since that
+// becomes this party's actual final value once cancelled.
 export const closeCycle = async (req, res) => {
-  const { actual, alacarteAmount, discount } = req.body;
-  if (actual == null || Number(actual) <= 0) return sendError(res, "A valid actual guest count is required.");
-  const alacarte = Number(alacarteAmount) || 0;
-  if (alacarte < 0) return sendError(res, "Alacarte amount can't be negative.");
-  const disc = Number(discount) || 0;
-  if (disc < 0) return sendError(res, "Discount can't be negative.");
+  const { remark, rating, cancelled, cancellationReason, cancellationAmount } = req.body;
+  if (!remark?.toString().trim()) return sendError(res, "A closing remark is required.");
+  const ratingN = rating == null || rating === '' ? 0 : Number(rating);
+  if (isNaN(ratingN) || ratingN < 0 || ratingN > 5) return sendError(res, "Rating must be between 0 and 5.");
 
   const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!doc) return sendError(res, "Party query not found.", 404);
   if (doc.status !== "accepted") return sendError(res, `Only an accepted party query can be closed (currently: ${doc.status}).`);
-  if (doc.rfpStatus !== "shared") return sendError(res, `The RFP must be shared with the client before the cycle can be closed (currently: ${doc.rfpStatus}).`);
-  if (!doc.rate) return sendError(res, "This party query has no Rate set, so Total (Actual × Rate) can't be calculated — set a Rate via Edit first.");
 
-  const grandTotal = (Number(actual) * doc.rate) + alacarte; // Total + Alacarte
-  doc.actual = Number(actual);
-  doc.alacarteAmount = alacarte;
-  doc.discount = disc;
-  doc.finalValue = Math.max(grandTotal - disc, 0);
+  const isCancelled = !!cancelled;
+  if (isCancelled) {
+    if (!cancellationReason?.toString().trim()) return sendError(res, "A cancellation reason is required.");
+
+    const advancePaid = (doc.paymentHistory || []).filter(p => p.kind === "advance").reduce((s, p) => s + p.amount, 0);
+    const requestedFee = Math.max(Number(cancellationAmount) || 0, 0);
+    const fee = advancePaid === 0 ? 0 : requestedFee; // nothing to charge against with no advance collected
+    const refund = Math.max(advancePaid - fee, 0);
+
+    doc.cancelled = true;
+    doc.cancellationReason = cancellationReason.toString().trim();
+    doc.cancellationAmount = fee;
+    doc.refundAmount = refund;
+    doc.billing.finalPartyValue = fee;
+    doc.markModified("billing");
+  } else {
+    if (!doc.billing?.finalPartyValue) return sendError(res, "Billing must be saved (with a valid final party value) before closing.");
+  }
+
   doc.status = "closed";
   doc.closedAt = new Date();
+  doc.closeRemark = remark.toString().trim();
+  doc.closeRating = ratingN;
   doc.updatedBy = req.user?.userId ?? null;
   await doc.save({ validateModifiedOnly: true });
-  return sendSuccess(res, doc, "Party cycle closed.");
+  return sendSuccess(res, doc, isCancelled ? "Party cancelled and closed." : "Party cycle closed.");
 };
 
 // PUT /:id/payment-status  { paymentStatus: 'pending' | 'partial' | 'paid', paymentAmount }

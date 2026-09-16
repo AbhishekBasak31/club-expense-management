@@ -14,7 +14,11 @@ import mongoose from "mongoose";
 //                             resubmitted for approval — never a dead end,
 //                             unlike the party-level reject above)
 //
-//   RFP shared ──close cycle (final value recorded)──> closed [terminal]
+//   RFP shared ──guest list──> billing──> payment(s)──> close (remark)──> closed [terminal]
+//   (guest list, billing and payment are each their own step/endpoint —
+//   closeCycle itself now only takes a remark; it requires billing to
+//   already be filled in, but does not require the party to be fully
+//   paid off — dueAmount can stay > 0 after closing)
 //
 // paymentStatus (pending/partial/paid) tracks the client's own payment
 // for the party — separate from `advance` (the booking deposit) and
@@ -208,6 +212,95 @@ const PartyQuerySchema = new mongoose.Schema(
 
     rfpStatus: { type: String, enum: ["not_generated", "generated", "approved", "rejected", "shared"], default: "not_generated" },
     rfp: { type: RfpSchema, default: null },
+
+    // ── Guest List (captured after the RFP is generated/shared) ───────
+    // "+N" suffix convention (handled on the frontend's Excel import,
+    // not here): a name like "Rahul +1" means 1 guest brought along, so
+    // count = N + 1. A bare name with no "+N" is count 1.
+    guestList: {
+      type: [
+        {
+          name: { type: String, trim: true, required: true },
+          count: { type: Number, default: 1, min: 1 },
+          phone: { type: String, trim: true, default: "" },
+        },
+      ],
+      default: [],
+    },
+
+    // ── Billing (4-table breakdown, filled in after the guest list) ───
+    // Every *Total/*Gst field here is ALWAYS server-recalculated from its
+    // own amount — never trusted from the client, same principle used
+    // everywhere else in this file (closeCycle, PLStatement, etc.).
+    // finalPartyValue = grandTotal (sum of the 4 table totals) − discount.
+    // discount is entered against the alacarte line specifically (per
+    // how the venue itemizes it), but arithmetically it's just subtracted
+    // from the overall sum to reach the final figure.
+    billing: {
+      mg: { type: Number, default: 0, min: 0 },
+      actual: { type: Number, default: 0, min: 0 },
+      billingRate: { type: Number, default: 0, min: 0 },
+      mainAmount: { type: Number, default: 0, min: 0 }, // actual * billingRate
+      mainGstEnabled: { type: Boolean, default: true },
+      mainGst: { type: Number, default: 0, min: 0 }, // 0 whenever mainGstEnabled is false
+      mainTotal: { type: Number, default: 0, min: 0 }, // mainAmount + mainGst
+
+      alacarteAmount: { type: Number, default: 0, min: 0 },
+      alacarteGstEnabled: { type: Boolean, default: true },
+      alacarteGst: { type: Number, default: 0, min: 0 },
+      alacarteTotal: { type: Number, default: 0, min: 0 },
+
+      photographyAmount: { type: Number, default: 0, min: 0 },
+      photographyGstEnabled: { type: Boolean, default: true },
+      photographyGst: { type: Number, default: 0, min: 0 },
+      photographyTotal: { type: Number, default: 0, min: 0 },
+
+      decorAmount: { type: Number, default: 0, min: 0 },
+      decorGstEnabled: { type: Boolean, default: true },
+      decorGst: { type: Number, default: 0, min: 0 },
+      decorTotal: { type: Number, default: 0, min: 0 },
+
+      grandTotal: { type: Number, default: 0, min: 0 }, // sum of the 4 *Total fields, before discount
+      discount: { type: Number, default: 0, min: 0 },
+      finalPartyValue: { type: Number, default: 0, min: 0 }, // grandTotal − discount, floored at 0
+      savedAt: { type: Date, default: null },
+    },
+
+    // ── Payment ledger ──────────────────────────────────────────────────
+    // Every transaction — every advance instalment AND the final
+    // settlement payment — lives here in order, so a full timeline can be
+    // rendered (per party or advance-only) and any single entry can
+    // produce its own receipt. Entries are never edited or removed once
+    // added; a correction is a new entry, not a rewrite of history.
+    paymentHistory: {
+      type: [
+        {
+          date: { type: Date, default: Date.now },
+          amount: { type: Number, required: true, min: 0 },
+          method: { type: String, enum: ["cash", "card", "upi", "net_banking"], default: "cash" },
+          kind: { type: String, enum: ["advance", "final"], default: "advance" },
+          note: { type: String, trim: true, default: "" },
+        },
+      ],
+      default: [],
+    },
+
+    // Remark captured on the dedicated close step — the only field that
+    // step takes; everything else needed to close (billing, payment) was
+    // already captured by the steps before it.
+    closeRemark: { type: String, trim: true, default: "" },
+    closeRating: { type: Number, default: 0, min: 0, max: 5 },
+
+    // ── Cancellation (an alternate outcome of closeCycle) ────────────────
+    // cancellationAmount is the fee actually charged; refundAmount is
+    // whatever's left of the advance after that fee — both always
+    // server-computed at close time, never trusted from the client.
+    // finalPartyValue itself is overwritten to equal cancellationAmount
+    // when a party is cancelled — see closeCycle.
+    cancelled: { type: Boolean, default: false },
+    cancellationReason: { type: String, trim: true, default: "" },
+    cancellationAmount: { type: Number, default: 0, min: 0 },
+    refundAmount: { type: Number, default: 0, min: 0 },
 
     isActive: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
