@@ -260,7 +260,21 @@ const PartyQuerySchema = new mongoose.Schema(
       decorGst: { type: Number, default: 0, min: 0 },
       decorTotal: { type: Number, default: 0, min: 0 },
 
-      grandTotal: { type: Number, default: 0, min: 0 }, // sum of the 4 *Total fields, before discount
+      // Cloud — priced off the RFP's cloudPackage (compulsory qty + per-
+      // unit price), not typed directly. Only the amount BEYOND the
+      // compulsory qty is chargeable: cloudChargeableQty = max(actualQty
+      // - compulsoryQty, 0), cloudAmount = cloudChargeableQty * per-unit
+      // price. All server-recalculated on save — see saveBilling.
+      cloudCompulsoryQty: { type: Number, default: 0, min: 0 },
+      cloudActualQty: { type: Number, default: 0, min: 0 },
+      cloudChargeableQty: { type: Number, default: 0, min: 0 },
+      cloudUnitPrice: { type: Number, default: 0, min: 0 },
+      cloudAmount: { type: Number, default: 0, min: 0 },
+      cloudGstEnabled: { type: Boolean, default: true },
+      cloudGst: { type: Number, default: 0, min: 0 },
+      cloudTotal: { type: Number, default: 0, min: 0 },
+
+      grandTotal: { type: Number, default: 0, min: 0 }, // sum of the 5 *Total fields, before discount
       discount: { type: Number, default: 0, min: 0 },
       finalPartyValue: { type: Number, default: 0, min: 0 }, // grandTotal − discount, floored at 0
       savedAt: { type: Date, default: null },

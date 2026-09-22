@@ -83,7 +83,6 @@ export const getPartyQueryById = async (req, res) => {
 export const updatePartyQuery = async (req, res) => {
   const existing = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!existing) return sendError(res, "Party query not found.", 404);
-  if (existing.status === "rejected") return sendError(res, "This party query was rejected and can no longer be edited.");
   if (existing.status === "closed") return sendError(res, "This party query is closed and can no longer be edited.");
 
   const { status, rfpStatus, advance, rfp, concernPerson, finalValue, closedAt, paymentStatus, actual, alacarteAmount, discount, paidAmount, guestList, billing, paymentHistory, closeRemark, closeRating, cancelled, cancellationReason, cancellationAmount, refundAmount, ...safeBody } = req.body;
@@ -144,7 +143,7 @@ export const updateAdvance = async (req, res) => {
 export const saveRfp = async (req, res) => {
   const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!doc) return sendError(res, "Party query not found.", 404);
-  if (doc.status !== "accepted") return sendError(res, "The party query must be accepted before an RFP can be created.");
+  if (doc.status === "closed") return sendError(res, "This party query is closed and can no longer be edited.");
   if (doc.rfpStatus === "shared") return sendError(res, "This RFP has already been shared with the client and can no longer be edited.");
 
   const { approvedBy, generatedAt, approvedAt, sharedAt, ...safeRfpBody } = req.body;
@@ -258,13 +257,13 @@ export const saveGuestList = async (req, res) => {
 // UI reads from `billing` itself.
 export const saveBilling = async (req, res) => {
   const {
-    mg, actual, billingRate, alacarteAmount, photographyAmount, decorAmount, discount,
-    mainGstEnabled, alacarteGstEnabled, photographyGstEnabled, decorGstEnabled,
+    mg, actual, billingRate, alacarteAmount, photographyAmount, decorAmount, discount, cloudActualQty,
+    mainGstEnabled, alacarteGstEnabled, photographyGstEnabled, decorGstEnabled, cloudGstEnabled,
   } = req.body;
 
   const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
   if (!doc) return sendError(res, "Party query not found.", 404);
-  if (!doc.guestList?.length) return sendError(res, "The guest list must be captured before billing.");
+  if (doc.status === "closed") return sendError(res, "This party query is closed and can no longer be edited.");
 
   const mgN = Number(mg) || 0;
   const actualN = Number(actual) || 0;
@@ -273,7 +272,8 @@ export const saveBilling = async (req, res) => {
   const photoN = Number(photographyAmount) || 0;
   const decorN = Number(decorAmount) || 0;
   const discN = Number(discount) || 0;
-  if ([mgN, actualN, rateN, alacarteN, photoN, decorN, discN].some(n => n < 0)) {
+  const cloudActualQtyN = Number(cloudActualQty) || 0;
+  if ([mgN, actualN, rateN, alacarteN, photoN, decorN, discN, cloudActualQtyN].some(n => n < 0)) {
     return sendError(res, "None of the billing figures can be negative.");
   }
   // Each table's GST checkbox — GST is only computed (and included in that
@@ -282,6 +282,7 @@ export const saveBilling = async (req, res) => {
   const alacarteGstOn = alacarteGstEnabled !== false;
   const photographyGstOn = photographyGstEnabled !== false;
   const decorGstOn = decorGstEnabled !== false;
+  const cloudGstOn = cloudGstEnabled !== false;
 
   const mainAmount = actualN * rateN;
   const mainGst = mainGstOn ? Math.round(mainAmount * GST_RATE) : 0;
@@ -296,7 +297,18 @@ export const saveBilling = async (req, res) => {
   const decorGst = decorGstOn ? Math.round(decorN * GST_RATE) : 0;
   const decorTotal = decorN + decorGst;
 
-  const grandTotal = mainTotal + alacarteTotal + photographyTotal + decorTotal;
+  // Cloud is priced off the RFP's own cloudPackage — compulsory qty and
+  // per-unit price are NOT entered here, only Actual Qty is. The
+  // compulsory qty is included in the package at no charge; only
+  // whatever Actual Qty exceeds it is chargeable.
+  const cloudCompulsoryQtyN = Number(doc.rfp?.cloudPackage?.compulsoryQty) || 0;
+  const cloudUnitPriceN = Number(doc.rfp?.cloudPackage?.perUnitPrice) || 0;
+  const cloudChargeableQty = Math.max(cloudActualQtyN - cloudCompulsoryQtyN, 0);
+  const cloudAmount = cloudChargeableQty * cloudUnitPriceN;
+  const cloudGst = cloudGstOn ? Math.round(cloudAmount * GST_RATE) : 0;
+  const cloudTotal = cloudAmount + cloudGst;
+
+  const grandTotal = mainTotal + alacarteTotal + photographyTotal + decorTotal + cloudTotal;
   const finalPartyValue = Math.max(grandTotal - discN, 0);
 
   doc.billing = {
@@ -304,6 +316,8 @@ export const saveBilling = async (req, res) => {
     alacarteAmount: alacarteN, alacarteGstEnabled: alacarteGstOn, alacarteGst, alacarteTotal,
     photographyAmount: photoN, photographyGstEnabled: photographyGstOn, photographyGst, photographyTotal,
     decorAmount: decorN, decorGstEnabled: decorGstOn, decorGst, decorTotal,
+    cloudCompulsoryQty: cloudCompulsoryQtyN, cloudActualQty: cloudActualQtyN, cloudChargeableQty, cloudUnitPrice: cloudUnitPriceN,
+    cloudAmount, cloudGstEnabled: cloudGstOn, cloudGst, cloudTotal,
     grandTotal, discount: discN, finalPartyValue, savedAt: new Date(),
   };
   // Legacy mirrors — see comment above.
