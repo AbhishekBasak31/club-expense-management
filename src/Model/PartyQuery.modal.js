@@ -76,6 +76,29 @@ const VegNonVegSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Each selected item is a snapshot of the Digital Menu item it came from
+// (name/category/subCategory/dietaryType/price captured at selection
+// time), plus the quantity chosen — not a live reference, so an RFP's
+// printed menu stays exactly what was agreed even if the master item's
+// price changes later. category/subCategory/dietaryType are what let
+// Rfpdocview group a flat list back into the sections a real menu has
+// (Sushi/Starters/Main Course split by Veg/Non-Veg, etc.) without this
+// schema needing to hardcode which sub-categories exist — the real menu
+// has 14+ of them under Food alone.
+const SelectedRfpMenuItemSchema = new mongoose.Schema(
+  {
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "DigitalMenuItem", default: null },
+    name: { type: String, trim: true, required: true },
+    category: { type: String, trim: true, default: "" },
+    subCategory: { type: String, trim: true, default: "" },
+    dietaryType: { type: String, enum: ["", "Veg", "Non-Veg", "Veg / Non-Veg"], default: "" },
+    price: { type: Number, default: 0, min: 0 },
+    isCustomisable: { type: Boolean, default: false },
+    qty: { type: Number, default: 1, min: 0 },
+  },
+  { _id: false }
+);
+
 const RfpSchema = new mongoose.Schema(
   {
     rfpNo: { type: String, trim: true, default: "" },
@@ -96,18 +119,12 @@ const RfpSchema = new mongoose.Schema(
     bookedBy: { type: String, trim: true, default: "" },
     guestList: { type: String, trim: true, default: "" },
 
-    beverageMenu: {
-      alcohols: { type: [AlcoholItemSchema], default: [] },
-      cocktails: { type: [MenuItemSchema], default: [] },
-      mocktails: { type: [MenuItemSchema], default: [] },
-      softBeverages: { type: [MenuItemSchema], default: [] },
-    },
-    foodMenu: {
-      sushi: { type: VegNonVegSchema, default: () => ({}) },
-      starters: { type: VegNonVegSchema, default: () => ({}) },
-      mainCourse: { type: VegNonVegSchema, default: () => ({}) },
-      dessert: { type: [MenuItemSchema], default: [] },
-    },
+    // Food tab = Digital Menu categories "Food" + "Zero A.B.V".
+    // Beverage tab = everything else (Bar, Cocktail Chronicles, Aerated
+    // Beverage, Energy Zone) — matching how the club's own menu itself
+    // groups these two tabs, not an arbitrary split.
+    selectedFoodItems: { type: [SelectedRfpMenuItemSchema], default: [] },
+    selectedBeverageItems: { type: [SelectedRfpMenuItemSchema], default: [] },
 
     generalInfo: {
       partyTiming: { type: String, trim: true, default: "" },
@@ -118,6 +135,7 @@ const RfpSchema = new mongoose.Schema(
       billingBy: { type: String, trim: true, default: "" },
       // Package rates — NUMBERS, not free text. Previously these were
       // plain strings (matching examples like "4000++" seen in a
+
       // reference document), but that made them impossible to reliably
       // sum into a real "Expected Sell" figure for the new Party
       // Alcohol Consumption page. If a rate genuinely needs a "++"-style
