@@ -36,7 +36,7 @@ import AlcoholPurchaseReportRouter from "./src/Routers/AlcoholPurchasereport.rou
 import CrockeryBreakageRouter from "./src/Routers/Crockery.Breakage.route.js";
 import ServiceMaintenanceRouter from "./src/Routers/ServiceMaintaince.route.js";
 import DailyBookingRouter from "./src/Routers/DailyBookings.route.js";
-
+import  DigitalMenuItemRouter from "./src/Routers/DigitalMenu.route.js";
 const app  = express();
 const PORT = process.env.PORT || 7000; 
 
@@ -145,8 +145,7 @@ app.use("/api/v1/party-alcohol-consumption", PartyAlcoholConsumptionRouter);
 app.use("/api/v1/crockery-breakage", CrockeryBreakageRouter);
 app.use("/api/v1/service-maintenance", ServiceMaintenanceRouter);
 app.use("/api/v1/daily-bookings", DailyBookingRouter);
-
-
+app.use("/api/v1/digital-menu-items",  DigitalMenuItemRouter);
 
 app.use('/uploads', express.static('uploads'));
 
