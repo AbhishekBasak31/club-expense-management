@@ -37,6 +37,7 @@ import CrockeryBreakageRouter from "./src/Routers/Crockery.Breakage.route.js";
 import ServiceMaintenanceRouter from "./src/Routers/ServiceMaintaince.route.js";
 import DailyBookingRouter from "./src/Routers/DailyBookings.route.js";
 import  DigitalMenuItemRouter from "./src/Routers/DigitalMenu.route.js";
+import PackageRouter from "./src/Routers/Package.route.js";
 const app  = express();
 const PORT = process.env.PORT || 7000; 
 
@@ -134,6 +135,7 @@ app.use("/api/v1/employees",       EmployeeRouter);
 app.use("/api/v1/travel-allowances",  TravelAllowanceRouter);
 app.use("/api/v1/stock",              StockRouter);
 app.use("/api/v1/manual-expenses",    ManualExpenseRouter);
+app.use("/api/v1/packages",            PackageRouter);
 app.use("/api/v1/checklist-master", ChecklistMasterRouter);
 app.use("/api/v1/checklists", ChecklistRouter);
 app.use("/api/v1/party-queries", PartyQueryRouter);
