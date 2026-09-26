@@ -156,6 +156,12 @@ export const saveRfp = async (req, res) => {
   doc.rfp.approvedAt = null;
   doc.rfpStatus = "generated";
   doc.updatedBy = req.user?.userId ?? null;
+  // Belt-and-suspenders: force the whole rfp subdocument to be treated as
+  // changed. Whole-path reassignment like above is normally tracked fine
+  // on its own, but this guards against the well-known Mongoose class of
+  // bugs where a nested object's change goes undetected and silently
+  // fails to persist even though save() reports success.
+  doc.markModified("rfp");
   await doc.save({ validateModifiedOnly: true });
   return sendSuccess(res, doc, "RFP saved.");
 };
@@ -213,7 +219,8 @@ export const sendRfp = async (req, res) => {
   return sendSuccess(res, doc, "RFP sent to client.");
 };
 
-const GST_RATE = 0.18; // 18% GST, flat, on every one of the 4 billing tables
+const GST_RATE = 0.18; // 18% GST, flat, on Tables 1-4 (Main/Alacarte/Photography/Decor)
+const CLOUD_GST_RATE = 0.40; // Cloud (Table 5) is billed at 40% GST, not the standard 18%
 
 // PUT /:id/guest-list  { guestList: [{ name, count, phone }] }
 // Only valid once an RFP has actually been generated (rfpStatus !==
@@ -259,6 +266,8 @@ export const saveBilling = async (req, res) => {
   const {
     mg, actual, billingRate, alacarteAmount, photographyAmount, decorAmount, discount, cloudActualQty,
     mainGstEnabled, alacarteGstEnabled, photographyGstEnabled, decorGstEnabled, cloudGstEnabled,
+    mainGstMode, alacarteGstMode, photographyGstMode, decorGstMode, cloudGstMode,
+    mainGstManualAmount, alacarteGstManualAmount, photographyGstManualAmount, decorGstManualAmount, cloudGstManualAmount,
   } = req.body;
 
   const doc = await PartyQuery.findOne({ _id: req.params.id, isActive: true });
@@ -273,6 +282,11 @@ export const saveBilling = async (req, res) => {
   const decorN = Number(decorAmount) || 0;
   const discN = Number(discount) || 0;
   const cloudActualQtyN = Number(cloudActualQty) || 0;
+  const mainGstManualN = Math.max(Number(mainGstManualAmount) || 0, 0);
+  const alacarteGstManualN = Math.max(Number(alacarteGstManualAmount) || 0, 0);
+  const photographyGstManualN = Math.max(Number(photographyGstManualAmount) || 0, 0);
+  const decorGstManualN = Math.max(Number(decorGstManualAmount) || 0, 0);
+  const cloudGstManualN = Math.max(Number(cloudGstManualAmount) || 0, 0);
   if ([mgN, actualN, rateN, alacarteN, photoN, decorN, discN, cloudActualQtyN].some(n => n < 0)) {
     return sendError(res, "None of the billing figures can be negative.");
   }
@@ -284,17 +298,26 @@ export const saveBilling = async (req, res) => {
   const decorGstOn = decorGstEnabled !== false;
   const cloudGstOn = cloudGstEnabled !== false;
 
+  // gstMode 'direct' uses the manually typed amount as-is instead of
+  // computing it from the percentage rate — for whenever the % figure
+  // doesn't match what actually needs to be billed for that table.
+  const mainGstModeV = mainGstMode === "direct" ? "direct" : "percent";
+  const alacarteGstModeV = alacarteGstMode === "direct" ? "direct" : "percent";
+  const photographyGstModeV = photographyGstMode === "direct" ? "direct" : "percent";
+  const decorGstModeV = decorGstMode === "direct" ? "direct" : "percent";
+  const cloudGstModeV = cloudGstMode === "direct" ? "direct" : "percent";
+
   const mainAmount = actualN * rateN;
-  const mainGst = mainGstOn ? Math.round(mainAmount * GST_RATE) : 0;
+  const mainGst = !mainGstOn ? 0 : mainGstModeV === "direct" ? mainGstManualN : Math.round(mainAmount * GST_RATE);
   const mainTotal = mainAmount + mainGst;
 
-  const alacarteGst = alacarteGstOn ? Math.round(alacarteN * GST_RATE) : 0;
+  const alacarteGst = !alacarteGstOn ? 0 : alacarteGstModeV === "direct" ? alacarteGstManualN : Math.round(alacarteN * GST_RATE);
   const alacarteTotal = alacarteN + alacarteGst;
 
-  const photographyGst = photographyGstOn ? Math.round(photoN * GST_RATE) : 0;
+  const photographyGst = !photographyGstOn ? 0 : photographyGstModeV === "direct" ? photographyGstManualN : Math.round(photoN * GST_RATE);
   const photographyTotal = photoN + photographyGst;
 
-  const decorGst = decorGstOn ? Math.round(decorN * GST_RATE) : 0;
+  const decorGst = !decorGstOn ? 0 : decorGstModeV === "direct" ? decorGstManualN : Math.round(decorN * GST_RATE);
   const decorTotal = decorN + decorGst;
 
   // Cloud is priced off the RFP's own cloudPackage — compulsory qty and
@@ -305,19 +328,20 @@ export const saveBilling = async (req, res) => {
   const cloudUnitPriceN = Number(doc.rfp?.cloudPackage?.perUnitPrice) || 0;
   const cloudChargeableQty = Math.max(cloudActualQtyN - cloudCompulsoryQtyN, 0);
   const cloudAmount = cloudChargeableQty * cloudUnitPriceN;
-  const cloudGst = cloudGstOn ? Math.round(cloudAmount * GST_RATE) : 0;
+  const cloudGst = !cloudGstOn ? 0 : cloudGstModeV === "direct" ? cloudGstManualN : Math.round(cloudAmount * CLOUD_GST_RATE);
   const cloudTotal = cloudAmount + cloudGst;
 
   const grandTotal = mainTotal + alacarteTotal + photographyTotal + decorTotal + cloudTotal;
   const finalPartyValue = Math.max(grandTotal - discN, 0);
 
   doc.billing = {
-    mg: mgN, actual: actualN, billingRate: rateN, mainAmount, mainGstEnabled: mainGstOn, mainGst, mainTotal,
-    alacarteAmount: alacarteN, alacarteGstEnabled: alacarteGstOn, alacarteGst, alacarteTotal,
-    photographyAmount: photoN, photographyGstEnabled: photographyGstOn, photographyGst, photographyTotal,
-    decorAmount: decorN, decorGstEnabled: decorGstOn, decorGst, decorTotal,
+    mg: mgN, actual: actualN, billingRate: rateN, mainAmount,
+    mainGstEnabled: mainGstOn, mainGstMode: mainGstModeV, mainGstManualAmount: mainGstManualN, mainGst, mainTotal,
+    alacarteAmount: alacarteN, alacarteGstEnabled: alacarteGstOn, alacarteGstMode: alacarteGstModeV, alacarteGstManualAmount: alacarteGstManualN, alacarteGst, alacarteTotal,
+    photographyAmount: photoN, photographyGstEnabled: photographyGstOn, photographyGstMode: photographyGstModeV, photographyGstManualAmount: photographyGstManualN, photographyGst, photographyTotal,
+    decorAmount: decorN, decorGstEnabled: decorGstOn, decorGstMode: decorGstModeV, decorGstManualAmount: decorGstManualN, decorGst, decorTotal,
     cloudCompulsoryQty: cloudCompulsoryQtyN, cloudActualQty: cloudActualQtyN, cloudChargeableQty, cloudUnitPrice: cloudUnitPriceN,
-    cloudAmount, cloudGstEnabled: cloudGstOn, cloudGst, cloudTotal,
+    cloudAmount, cloudGstEnabled: cloudGstOn, cloudGstMode: cloudGstModeV, cloudGstManualAmount: cloudGstManualN, cloudGst, cloudTotal,
     grandTotal, discount: discN, finalPartyValue, savedAt: new Date(),
   };
   // Legacy mirrors — see comment above.

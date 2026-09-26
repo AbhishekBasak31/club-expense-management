@@ -126,6 +126,16 @@ const RfpSchema = new mongoose.Schema(
     selectedFoodItems: { type: [SelectedRfpMenuItemSchema], default: [] },
     selectedBeverageItems: { type: [SelectedRfpMenuItemSchema], default: [] },
 
+    // "Cloud" — a real top-level expense Group (Food, Tobacco, Packing
+    // Expense, and Cloud Expense are all top-level Groups). A package
+    // includes a compulsory qty at no extra charge; anything actually used
+    // beyond that is billed at perUnitPrice — see BillingModal's Cloud
+    // table, which reads these two fields directly from here.
+    cloudPackage: {
+      compulsoryQty: { type: Number, default: 0, min: 0 },
+      perUnitPrice: { type: Number, default: 0, min: 0 },
+    },
+
     generalInfo: {
       partyTiming: { type: String, trim: true, default: "" },
       guestArrival: { type: String, trim: true, default: "" },
@@ -260,21 +270,32 @@ const PartyQuerySchema = new mongoose.Schema(
       billingRate: { type: Number, default: 0, min: 0 },
       mainAmount: { type: Number, default: 0, min: 0 }, // actual * billingRate
       mainGstEnabled: { type: Boolean, default: true },
+      // gstMode: 'percent' computes GST as amount * rate (18%, or 40% for
+      // Cloud); 'direct' uses gstManualAmount as-is instead — for when the
+      // percentage figure doesn't match what actually needs to be billed.
+      mainGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
+      mainGstManualAmount: { type: Number, default: 0, min: 0 },
       mainGst: { type: Number, default: 0, min: 0 }, // 0 whenever mainGstEnabled is false
       mainTotal: { type: Number, default: 0, min: 0 }, // mainAmount + mainGst
 
       alacarteAmount: { type: Number, default: 0, min: 0 },
       alacarteGstEnabled: { type: Boolean, default: true },
+      alacarteGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
+      alacarteGstManualAmount: { type: Number, default: 0, min: 0 },
       alacarteGst: { type: Number, default: 0, min: 0 },
       alacarteTotal: { type: Number, default: 0, min: 0 },
 
       photographyAmount: { type: Number, default: 0, min: 0 },
       photographyGstEnabled: { type: Boolean, default: true },
+      photographyGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
+      photographyGstManualAmount: { type: Number, default: 0, min: 0 },
       photographyGst: { type: Number, default: 0, min: 0 },
       photographyTotal: { type: Number, default: 0, min: 0 },
 
       decorAmount: { type: Number, default: 0, min: 0 },
       decorGstEnabled: { type: Boolean, default: true },
+      decorGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
+      decorGstManualAmount: { type: Number, default: 0, min: 0 },
       decorGst: { type: Number, default: 0, min: 0 },
       decorTotal: { type: Number, default: 0, min: 0 },
 
@@ -289,6 +310,8 @@ const PartyQuerySchema = new mongoose.Schema(
       cloudUnitPrice: { type: Number, default: 0, min: 0 },
       cloudAmount: { type: Number, default: 0, min: 0 },
       cloudGstEnabled: { type: Boolean, default: true },
+      cloudGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
+      cloudGstManualAmount: { type: Number, default: 0, min: 0 },
       cloudGst: { type: Number, default: 0, min: 0 },
       cloudTotal: { type: Number, default: 0, min: 0 },
 
