@@ -261,14 +261,14 @@ const PartyQuerySchema = new mongoose.Schema(
     // own amount — never trusted from the client, same principle used
     // everywhere else in this file (closeCycle, PLStatement, etc.).
     // finalPartyValue = grandTotal (sum of the 4 table totals) − discount.
-    // discount is entered against the alacarte line specifically (per
-    // how the venue itemizes it), but arithmetically it's just subtracted
-    // from the overall sum to reach the final figure.
+    // Each table carries its own discount now, applied to that table's
+    // own amount before GST — not one lump sum subtracted at the end.
     billing: {
       mg: { type: Number, default: 0, min: 0 },
       actual: { type: Number, default: 0, min: 0 },
       billingRate: { type: Number, default: 0, min: 0 },
       mainAmount: { type: Number, default: 0, min: 0 }, // actual * billingRate
+      mainDiscount: { type: Number, default: 0, min: 0 }, // subtracted from mainAmount before GST
       mainGstEnabled: { type: Boolean, default: true },
       // gstMode: 'percent' computes GST as amount * rate (18%, or 40% for
       // Cloud); 'direct' uses gstManualAmount as-is instead — for when the
@@ -279,6 +279,7 @@ const PartyQuerySchema = new mongoose.Schema(
       mainTotal: { type: Number, default: 0, min: 0 }, // mainAmount + mainGst
 
       alacarteAmount: { type: Number, default: 0, min: 0 },
+      alacarteDiscount: { type: Number, default: 0, min: 0 },
       alacarteGstEnabled: { type: Boolean, default: true },
       alacarteGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
       alacarteGstManualAmount: { type: Number, default: 0, min: 0 },
@@ -286,6 +287,7 @@ const PartyQuerySchema = new mongoose.Schema(
       alacarteTotal: { type: Number, default: 0, min: 0 },
 
       photographyAmount: { type: Number, default: 0, min: 0 },
+      photographyDiscount: { type: Number, default: 0, min: 0 },
       photographyGstEnabled: { type: Boolean, default: true },
       photographyGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
       photographyGstManualAmount: { type: Number, default: 0, min: 0 },
@@ -293,6 +295,7 @@ const PartyQuerySchema = new mongoose.Schema(
       photographyTotal: { type: Number, default: 0, min: 0 },
 
       decorAmount: { type: Number, default: 0, min: 0 },
+      decorDiscount: { type: Number, default: 0, min: 0 },
       decorGstEnabled: { type: Boolean, default: true },
       decorGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
       decorGstManualAmount: { type: Number, default: 0, min: 0 },
@@ -309,15 +312,16 @@ const PartyQuerySchema = new mongoose.Schema(
       cloudChargeableQty: { type: Number, default: 0, min: 0 },
       cloudUnitPrice: { type: Number, default: 0, min: 0 },
       cloudAmount: { type: Number, default: 0, min: 0 },
+      cloudDiscount: { type: Number, default: 0, min: 0 },
       cloudGstEnabled: { type: Boolean, default: true },
       cloudGstMode: { type: String, enum: ["percent", "direct"], default: "percent" },
       cloudGstManualAmount: { type: Number, default: 0, min: 0 },
       cloudGst: { type: Number, default: 0, min: 0 },
       cloudTotal: { type: Number, default: 0, min: 0 },
 
-      grandTotal: { type: Number, default: 0, min: 0 }, // sum of the 5 *Total fields, before discount
-      discount: { type: Number, default: 0, min: 0 },
-      finalPartyValue: { type: Number, default: 0, min: 0 }, // grandTotal − discount, floored at 0
+      grandTotal: { type: Number, default: 0, min: 0 }, // sum of the 5 *Total fields (each already net of its own discount)
+      discount: { type: Number, default: 0, min: 0 }, // sum of the 5 table discounts — kept for anything that reads a single overall figure
+      finalPartyValue: { type: Number, default: 0, min: 0 }, // == grandTotal, since each table already nets its own discount
       savedAt: { type: Date, default: null },
     },
 

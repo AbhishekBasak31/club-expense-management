@@ -264,7 +264,8 @@ export const saveGuestList = async (req, res) => {
 // UI reads from `billing` itself.
 export const saveBilling = async (req, res) => {
   const {
-    mg, actual, billingRate, alacarteAmount, photographyAmount, decorAmount, discount, cloudActualQty,
+    mg, actual, billingRate, alacarteAmount, photographyAmount, decorAmount, cloudActualQty,
+    mainDiscount, alacarteDiscount, photographyDiscount, decorDiscount, cloudDiscount,
     mainGstEnabled, alacarteGstEnabled, photographyGstEnabled, decorGstEnabled, cloudGstEnabled,
     mainGstMode, alacarteGstMode, photographyGstMode, decorGstMode, cloudGstMode,
     mainGstManualAmount, alacarteGstManualAmount, photographyGstManualAmount, decorGstManualAmount, cloudGstManualAmount,
@@ -280,14 +281,18 @@ export const saveBilling = async (req, res) => {
   const alacarteN = Number(alacarteAmount) || 0;
   const photoN = Number(photographyAmount) || 0;
   const decorN = Number(decorAmount) || 0;
-  const discN = Number(discount) || 0;
   const cloudActualQtyN = Number(cloudActualQty) || 0;
+  const mainDiscountN = Math.max(Number(mainDiscount) || 0, 0);
+  const alacarteDiscountN = Math.max(Number(alacarteDiscount) || 0, 0);
+  const photographyDiscountN = Math.max(Number(photographyDiscount) || 0, 0);
+  const decorDiscountN = Math.max(Number(decorDiscount) || 0, 0);
+  const cloudDiscountN = Math.max(Number(cloudDiscount) || 0, 0);
   const mainGstManualN = Math.max(Number(mainGstManualAmount) || 0, 0);
   const alacarteGstManualN = Math.max(Number(alacarteGstManualAmount) || 0, 0);
   const photographyGstManualN = Math.max(Number(photographyGstManualAmount) || 0, 0);
   const decorGstManualN = Math.max(Number(decorGstManualAmount) || 0, 0);
   const cloudGstManualN = Math.max(Number(cloudGstManualAmount) || 0, 0);
-  if ([mgN, actualN, rateN, alacarteN, photoN, decorN, discN, cloudActualQtyN].some(n => n < 0)) {
+  if ([mgN, actualN, rateN, alacarteN, photoN, decorN, cloudActualQtyN].some(n => n < 0)) {
     return sendError(res, "None of the billing figures can be negative.");
   }
   // Each table's GST checkbox — GST is only computed (and included in that
@@ -307,18 +312,25 @@ export const saveBilling = async (req, res) => {
   const decorGstModeV = decorGstMode === "direct" ? "direct" : "percent";
   const cloudGstModeV = cloudGstMode === "direct" ? "direct" : "percent";
 
+  // Each table's own discount is netted out of that table's own amount
+  // BEFORE GST is computed — GST is charged on what's actually payable
+  // for that line, not on the pre-discount figure.
   const mainAmount = actualN * rateN;
-  const mainGst = !mainGstOn ? 0 : mainGstModeV === "direct" ? mainGstManualN : Math.round(mainAmount * GST_RATE);
-  const mainTotal = mainAmount + mainGst;
+  const mainNet = Math.max(mainAmount - mainDiscountN, 0);
+  const mainGst = !mainGstOn ? 0 : mainGstModeV === "direct" ? mainGstManualN : Math.round(mainNet * GST_RATE);
+  const mainTotal = mainNet + mainGst;
 
-  const alacarteGst = !alacarteGstOn ? 0 : alacarteGstModeV === "direct" ? alacarteGstManualN : Math.round(alacarteN * GST_RATE);
-  const alacarteTotal = alacarteN + alacarteGst;
+  const alacarteNet = Math.max(alacarteN - alacarteDiscountN, 0);
+  const alacarteGst = !alacarteGstOn ? 0 : alacarteGstModeV === "direct" ? alacarteGstManualN : Math.round(alacarteNet * GST_RATE);
+  const alacarteTotal = alacarteNet + alacarteGst;
 
-  const photographyGst = !photographyGstOn ? 0 : photographyGstModeV === "direct" ? photographyGstManualN : Math.round(photoN * GST_RATE);
-  const photographyTotal = photoN + photographyGst;
+  const photographyNet = Math.max(photoN - photographyDiscountN, 0);
+  const photographyGst = !photographyGstOn ? 0 : photographyGstModeV === "direct" ? photographyGstManualN : Math.round(photographyNet * GST_RATE);
+  const photographyTotal = photographyNet + photographyGst;
 
-  const decorGst = !decorGstOn ? 0 : decorGstModeV === "direct" ? decorGstManualN : Math.round(decorN * GST_RATE);
-  const decorTotal = decorN + decorGst;
+  const decorNet = Math.max(decorN - decorDiscountN, 0);
+  const decorGst = !decorGstOn ? 0 : decorGstModeV === "direct" ? decorGstManualN : Math.round(decorNet * GST_RATE);
+  const decorTotal = decorNet + decorGst;
 
   // Cloud is priced off the RFP's own cloudPackage — compulsory qty and
   // per-unit price are NOT entered here, only Actual Qty is. The
@@ -328,26 +340,28 @@ export const saveBilling = async (req, res) => {
   const cloudUnitPriceN = Number(doc.rfp?.cloudPackage?.perUnitPrice) || 0;
   const cloudChargeableQty = Math.max(cloudActualQtyN - cloudCompulsoryQtyN, 0);
   const cloudAmount = cloudChargeableQty * cloudUnitPriceN;
-  const cloudGst = !cloudGstOn ? 0 : cloudGstModeV === "direct" ? cloudGstManualN : Math.round(cloudAmount * CLOUD_GST_RATE);
-  const cloudTotal = cloudAmount + cloudGst;
+  const cloudNet = Math.max(cloudAmount - cloudDiscountN, 0);
+  const cloudGst = !cloudGstOn ? 0 : cloudGstModeV === "direct" ? cloudGstManualN : Math.round(cloudNet * CLOUD_GST_RATE);
+  const cloudTotal = cloudNet + cloudGst;
 
   const grandTotal = mainTotal + alacarteTotal + photographyTotal + decorTotal + cloudTotal;
-  const finalPartyValue = Math.max(grandTotal - discN, 0);
+  const totalDiscount = mainDiscountN + alacarteDiscountN + photographyDiscountN + decorDiscountN + cloudDiscountN;
+  const finalPartyValue = grandTotal; // each table already nets its own discount
 
   doc.billing = {
-    mg: mgN, actual: actualN, billingRate: rateN, mainAmount,
+    mg: mgN, actual: actualN, billingRate: rateN, mainAmount, mainDiscount: mainDiscountN,
     mainGstEnabled: mainGstOn, mainGstMode: mainGstModeV, mainGstManualAmount: mainGstManualN, mainGst, mainTotal,
-    alacarteAmount: alacarteN, alacarteGstEnabled: alacarteGstOn, alacarteGstMode: alacarteGstModeV, alacarteGstManualAmount: alacarteGstManualN, alacarteGst, alacarteTotal,
-    photographyAmount: photoN, photographyGstEnabled: photographyGstOn, photographyGstMode: photographyGstModeV, photographyGstManualAmount: photographyGstManualN, photographyGst, photographyTotal,
-    decorAmount: decorN, decorGstEnabled: decorGstOn, decorGstMode: decorGstModeV, decorGstManualAmount: decorGstManualN, decorGst, decorTotal,
+    alacarteAmount: alacarteN, alacarteDiscount: alacarteDiscountN, alacarteGstEnabled: alacarteGstOn, alacarteGstMode: alacarteGstModeV, alacarteGstManualAmount: alacarteGstManualN, alacarteGst, alacarteTotal,
+    photographyAmount: photoN, photographyDiscount: photographyDiscountN, photographyGstEnabled: photographyGstOn, photographyGstMode: photographyGstModeV, photographyGstManualAmount: photographyGstManualN, photographyGst, photographyTotal,
+    decorAmount: decorN, decorDiscount: decorDiscountN, decorGstEnabled: decorGstOn, decorGstMode: decorGstModeV, decorGstManualAmount: decorGstManualN, decorGst, decorTotal,
     cloudCompulsoryQty: cloudCompulsoryQtyN, cloudActualQty: cloudActualQtyN, cloudChargeableQty, cloudUnitPrice: cloudUnitPriceN,
-    cloudAmount, cloudGstEnabled: cloudGstOn, cloudGstMode: cloudGstModeV, cloudGstManualAmount: cloudGstManualN, cloudGst, cloudTotal,
-    grandTotal, discount: discN, finalPartyValue, savedAt: new Date(),
+    cloudAmount, cloudDiscount: cloudDiscountN, cloudGstEnabled: cloudGstOn, cloudGstMode: cloudGstModeV, cloudGstManualAmount: cloudGstManualN, cloudGst, cloudTotal,
+    grandTotal, discount: totalDiscount, finalPartyValue, savedAt: new Date(),
   };
   // Legacy mirrors — see comment above.
   doc.actual = actualN;
   doc.alacarteAmount = alacarteN;
-  doc.discount = discN;
+  doc.discount = totalDiscount;
   doc.finalValue = finalPartyValue;
   doc.updatedBy = req.user?.userId ?? null;
   await doc.save({ validateModifiedOnly: true });
