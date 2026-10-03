@@ -96,19 +96,38 @@ export const createExpense = async (req, res) => {
     return sendError(res, "At least one expense item is required.");
 
   if (entryStatus === "draft") {
-    // Drafts: only require each item to have some description text.
     if (!items.some((item) => (item.description || "").trim()))
       return sendError(res, "At least one item needs a description.");
   } else {
-    // Final entries: full validation, same as before.
     for (const item of items) {
       if (!item.expenseType || !item.description || item.unitPrice == null)
         return sendError(res, "Each item needs expenseType, description and unitPrice.");
+    }
+    
+    // NEW: Duplicate Bill Validation
+    // Ignores blank bill numbers or "N/A" (commonly used for petty cash/local buys)
+    for (const item of items) {
+      const billNo = (item.billNo || "").trim();
+      const vendorId = item.vendorId;
+
+      if (billNo && billNo.toUpperCase() !== "N/A" && vendorId) {
+        const duplicateExists = await ExpenseEntry.exists({
+          status: "final",
+          "items.vendorId": vendorId,
+          "items.billNo": billNo
+        });
+
+        if (duplicateExists) {
+          return sendError(res, `Duplicate Bill Detected: Bill No. '${billNo}' has already been entered for this vendor.`);
+        }
+      }
     }
   }
 
   const { calculated, subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal } =
     calculateItems(items, deliveryCharge, roundOff);
+    
+  // ... rest of the existing create logic
 
   const entry = await ExpenseEntry.create({
     date,

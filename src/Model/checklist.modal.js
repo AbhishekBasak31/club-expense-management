@@ -1,71 +1,115 @@
 import mongoose from "mongoose";
 
 // ─────────────────────────────────────────────────────────────────
-// Checklist (management data) — the operational fields for one
-// checklist item: enrollment/validation dates, the responsible person,
-// and the uploaded document. This collection no longer owns the
-// checklist's NAME — that now lives in ChecklistMaster, and this
-// document references it via checklistMasterId. Which rows exist on
-// the Checklist Management page is entirely governed by ChecklistMaster
-// (add/remove a checklist TYPE there); this collection only ever gets
-// upserted (find-or-create-on-first-edit) by checklistMasterId — there
-// is no standalone "create" or "delete" of a management row from the
-// Management page itself, only from the cascade when a master item is
-// deleted (see ChecklistMaster.controller.js).
+// Checklist — management data + maker/checker workflow.
 //
-// One management document per master item (1:1) — enforced by the
-// unique index below AND by the controller always using
-// findOneAndUpdate({checklistMasterId}, ..., {upsert:true}) rather than
-// a plain create, so two management rows can never exist for the same
-// checklist name.
+// WORKFLOW (per item):
+//   1. Maker fills in operational fields (dates, concerned person)
+//      AND answers each norm-question (Yes/No or document upload).
+//   2. On submit, a "Maker Confirm" modal auto-opens: maker types
+//      their name, timestamp is captured, workflowStatus → "under_review".
+//   3. Checker sees the item on their dashboard, opens a read-only
+//      view, verifies each answer, ticks the confirmation checkbox,
+//      types their name — timestamp is captured automatically.
+//      workflowStatus → "completed".
 //
-// Status (Valid / Expiring Soon / Expired / Pending) is intentionally
-// NOT stored here — it's derived from dateOfValidation + whether a
-// document has been uploaded, computed at request time in the
-// controller (see withStatus), the same way Employee.controller.js
-// derives `age` from dateOfBirth rather than storing it. A stored
-// status would silently go stale the moment a validation date passes
-// without anyone re-saving the record.
+// checklistNorms: stores per-item answers keyed by normId (from
+//   ChecklistMaster.norms[]). Each answer is either:
+//     { type: "yes_no", value: "yes"|"no" }
+//     { type: "document", documentName, documentUrl, documentPublicId }
+//   A norm that hasn't been answered yet has no key in this map.
+//
+// Status derivation (existing logic, unchanged):
+//   valid / expiring_soon / expired / pending — from dateOfValidation
+//   + whether a document has been uploaded. Stored separately from
+//   workflowStatus (the 4-state validation status and the 3-state
+//   maker/checker status are orthogonal concepts).
 // ─────────────────────────────────────────────────────────────────
+
+const NormAnswerSchema = new mongoose.Schema(
+  {
+    normId   : { type: mongoose.Schema.Types.ObjectId, required: true },
+    normText : { type: String, required: true },          // snapshot at answer time
+    answerType: { type: String, enum: ["yes_no", "document"], required: true },
+    // yes_no answer
+    yesNoValue      : { type: String, enum: ["yes", "no", ""], default: "" },
+    // document answer
+    documentName    : { type: String, default: "" },
+    documentUrl     : { type: String, default: "" },
+    documentPublicId: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+const MakerStampSchema = new mongoose.Schema(
+  {
+    name      : { type: String, trim: true, default: "" },
+    timestamp : { type: Date, default: null },
+    // Which action the maker took: "submitted" (fields + norms answered
+    // and submitted for review) or "document" (uploaded the primary doc)
+    action    : { type: String, enum: ["submitted", "document", ""], default: "" },
+  },
+  { _id: false }
+);
+
+const CheckerStampSchema = new mongoose.Schema(
+  {
+    name      : { type: String, trim: true, default: "" },
+    timestamp : { type: Date, default: null },
+    verified  : { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
 const ChecklistSchema = new mongoose.Schema(
   {
-    checklistMasterId: { type: mongoose.Schema.Types.ObjectId, ref: "ChecklistMaster", required: true, unique: true },
+    checklistMasterId: {
+      type    : mongoose.Schema.Types.ObjectId,
+      ref     : "ChecklistMaster",
+      required: true,
+      unique  : true,
+    },
 
-    // Not required at the schema level (unlike the old checklistName-
-    // keyed version) — a management row can now come into existence via
-    // upsert the moment the user fills in ANY single field, so none of
-    // these can be mandatory up front the way they were when "create"
-    // was an explicit, all-fields-at-once action.
-    dateOfEnrollment : { type: Date, default: null },
-    dateOfValidation : { type: Date, default: null },
-
+    // ── Operational fields (unchanged from v1) ──────────────────────
+    dateOfEnrollment : { type: Date,   default: null },
+    dateOfValidation : { type: Date,   default: null },
     concernedPerson  : { type: String, trim: true, default: "" },
     email            : { type: String, trim: true, lowercase: true, default: "" },
     phoneNumber      : { type: String, trim: true, default: "" },
 
-    // Populated once a file is uploaded via POST /:masterId/document.
-    // documentPublicId is only set when Cloudinary storage is active
-    // (see Utils/upload.js) — it's what a later delete/replace uses to
-    // remove the old file from Cloudinary; it stays "" for local-disk
-    // storage, where documentUrl alone is enough to locate the file.
+    // Primary document (unchanged from v1)
     documentName     : { type: String, trim: true, default: "" },
     documentUrl      : { type: String, trim: true, default: "" },
     documentPublicId : { type: String, trim: true, default: "" },
 
-    // Soft-delete — set false by the cascade when the owning
-    // ChecklistMaster item is deleted. There is no direct user-facing
-    // delete of a management row on its own.
-    isActive         : { type: Boolean, default: true },
+    // ── FSSAI / norm answers ────────────────────────────────────────
+    // One entry per answered norm (norms themselves live in
+    // ChecklistMaster.norms[]). Unanswered norms are simply absent.
+    normAnswers: { type: [NormAnswerSchema], default: [] },
 
-    createdBy        : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-    updatedBy        : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    // ── Maker/Checker workflow ──────────────────────────────────────
+    // "draft"        → maker is editing, nothing submitted yet
+    // "under_review" → maker submitted; waiting for checker
+    // "completed"    → checker verified
+    workflowStatus: {
+      type   : String,
+      enum   : ["draft", "under_review", "completed"],
+      default: "draft",
+    },
+    makerStamp : { type: MakerStampSchema,  default: () => ({}) },
+    checkerStamp: { type: CheckerStampSchema, default: () => ({}) },
+
+    isActive : { type: Boolean, default: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true }
 );
 
-ChecklistSchema.index({ concernedPerson: 1 });
-ChecklistSchema.index({ dateOfValidation: 1 });
-ChecklistSchema.index({ isActive: 1 });
+ChecklistSchema.index({ concernedPerson   : 1 });
+ChecklistSchema.index({ dateOfValidation  : 1 });
+ChecklistSchema.index({ isActive          : 1 });
+ChecklistSchema.index({ workflowStatus    : 1 });
 
 export const Checklist = mongoose.model("Checklist", ChecklistSchema);
 export default Checklist;

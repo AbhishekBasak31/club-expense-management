@@ -1,16 +1,11 @@
 import Checklist from "../Model/checklist.modal.js";
 import ChecklistMaster from "../Model/ChecklistMaster.modal.js";
-
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 import { storeUploadedFile, deleteStoredFile } from "../Utils/upload.js";
 
 const EXPIRING_WINDOW_DAYS = 30;
 
-// Status is derived here, at request time, from dateOfValidation +
-// whether a document exists — never stored (see checklist.modal.js
-// comment for why). A row with no validation date yet (nothing filled
-// in for this master item) is 'pending', same as one with a date but
-// no uploaded document — both mean "not yet actually validated".
+// ── Status derivation (unchanged) ────────────────────────────────────────────
 function deriveStatus({ dateOfValidation, documentUrl }) {
   if (!documentUrl || !dateOfValidation) return "pending";
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -19,48 +14,48 @@ function deriveStatus({ dateOfValidation, documentUrl }) {
   return daysLeft < 0 ? "expired" : daysLeft <= EXPIRING_WINDOW_DAYS ? "expiring_soon" : "valid";
 }
 
-// One row per ACTIVE ChecklistMaster item, always — even if no
-// management document has ever been created for it yet (a brand-new
-// checklist name shows up immediately with every field blank and
-// status 'pending'). `_id` on the returned row is the MASTER item's id
-// — every other endpoint here (update, document upload/delete) is
-// keyed by that same masterId, not by the management document's own
-// _id, so the frontend never needs to know whether a management row
-// exists yet or is about to be created by this call.
+// ── Row merger (extended with workflow fields) ────────────────────────────────
 function mergeRow(master, mgmt) {
   const base = {
-    _id: String(master._id),
-    checklistMasterId: String(master._id),
-    checklistName: master.name,
-    category: master.category || "",
-    dateOfEnrollment: mgmt?.dateOfEnrollment ?? null,
-    dateOfValidation: mgmt?.dateOfValidation ?? null,
-    concernedPerson: mgmt?.concernedPerson ?? "",
-    email: mgmt?.email ?? "",
-    phoneNumber: mgmt?.phoneNumber ?? "",
-    documentName: mgmt?.documentName ?? "",
-    documentUrl: mgmt?.documentUrl ?? "",
-    documentPublicId: mgmt?.documentPublicId ?? "",
-    createdAt: mgmt?.createdAt ?? master.createdAt,
-    updatedAt: mgmt?.updatedAt ?? master.updatedAt,
+    _id               : String(master._id),
+    checklistMasterId : String(master._id),
+    checklistName     : master.name,
+    category          : master.category || "",
+    norms             : master.norms    || [],       // NEW: norm definitions
+    dateOfEnrollment  : mgmt?.dateOfEnrollment  ?? null,
+    dateOfValidation  : mgmt?.dateOfValidation  ?? null,
+    concernedPerson   : mgmt?.concernedPerson   ?? "",
+    email             : mgmt?.email             ?? "",
+    phoneNumber       : mgmt?.phoneNumber       ?? "",
+    documentName      : mgmt?.documentName      ?? "",
+    documentUrl       : mgmt?.documentUrl       ?? "",
+    documentPublicId  : mgmt?.documentPublicId  ?? "",
+    // NEW: norm answers
+    normAnswers       : mgmt?.normAnswers       ?? [],
+    // NEW: workflow
+    workflowStatus    : mgmt?.workflowStatus    ?? "draft",
+    makerStamp        : mgmt?.makerStamp        ?? { name: "", timestamp: null, action: "" },
+    checkerStamp      : mgmt?.checkerStamp      ?? { name: "", timestamp: null, verified: false },
+    createdAt         : mgmt?.createdAt         ?? master.createdAt,
+    updatedAt         : mgmt?.updatedAt         ?? master.updatedAt,
   };
   return { ...base, status: deriveStatus(base) };
 }
 
-// Query params (all optional):
-//   search            — matches the master item's name, or concernedPerson/email/phoneNumber
-//   status            — 'valid' | 'expiring_soon' | 'expired' | 'pending'
-//   category          — exact match against the master item's category tag
-//   concernedPerson   — exact match
-//   validationFrom/To — ISO date bounds on dateOfValidation
+// ── GET /  — list all active master items with their management data ──────────
+// Query params unchanged + new: workflowStatus filter.
 export const getChecklists = async (req, res) => {
-  const { search, status, category, concernedPerson, validationFrom, validationTo } = req.query;
+  const {
+    search, status, category, concernedPerson,
+    validationFrom, validationTo,
+    workflowStatus,   // NEW: "draft" | "under_review" | "completed"
+  } = req.query;
 
-  const masters = await ChecklistMaster.find({ isActive: true }).sort({ name: 1 }).lean();
+  const masters     = await ChecklistMaster.find({ isActive: true }).sort({ name: 1 }).lean();
   const managements = await Checklist.find({ isActive: true }).lean();
-  const mgmtByMasterId = new Map(managements.map(m => [String(m.checklistMasterId), m]));
+  const mgmtByMId   = new Map(managements.map(m => [String(m.checklistMasterId), m]));
 
-  let rows = masters.map(master => mergeRow(master, mgmtByMasterId.get(String(master._id))));
+  let rows = masters.map(master => mergeRow(master, mgmtByMId.get(String(master._id))));
 
   if (search) {
     const q = search.toLowerCase();
@@ -71,11 +66,12 @@ export const getChecklists = async (req, res) => {
       r.phoneNumber.toLowerCase().includes(q)
     );
   }
-  if (status) rows = rows.filter(r => r.status === status);
-  if (category) rows = rows.filter(r => r.category === category);
+  if (status)          rows = rows.filter(r => r.status === status);
+  if (category)        rows = rows.filter(r => r.category === category);
   if (concernedPerson) rows = rows.filter(r => r.concernedPerson === concernedPerson);
-  if (validationFrom) rows = rows.filter(r => r.dateOfValidation && new Date(r.dateOfValidation) >= new Date(validationFrom));
-  if (validationTo)   rows = rows.filter(r => r.dateOfValidation && new Date(r.dateOfValidation) <= new Date(validationTo));
+  if (workflowStatus)  rows = rows.filter(r => r.workflowStatus === workflowStatus);
+  if (validationFrom)  rows = rows.filter(r => r.dateOfValidation && new Date(r.dateOfValidation) >= new Date(validationFrom));
+  if (validationTo)    rows = rows.filter(r => r.dateOfValidation && new Date(r.dateOfValidation) <= new Date(validationTo));
 
   return sendSuccess(res, rows);
 };
@@ -87,26 +83,22 @@ export const getChecklistByMasterId = async (req, res) => {
   return sendSuccess(res, mergeRow(master, mgmt));
 };
 
-// PUT /:masterId — upsert. There is no separate "create" endpoint for
-// management rows: the first edit to a given master item's fields is
-// what brings its Checklist document into existence, via upsert. Every
-// later edit updates that same document (enforced 1:1 by the unique
-// index on checklistMasterId in checklist.modal.js).
+// ── PUT /:masterId — upsert operational fields ────────────────────────────────
+// Strips document and workflow fields — those have their own endpoints.
 export const updateChecklist = async (req, res) => {
   const master = await ChecklistMaster.findOne({ _id: req.params.masterId, isActive: true });
   if (!master) return sendError(res, "Checklist name not found.", 404);
 
-  // documentName/documentUrl/documentPublicId/checklistMasterId are only
-  // ever set via the dedicated upload endpoint (or this upsert's own
-  // $setOnInsert below) — stripped from the body here so a plain field
-  // edit can't accidentally blank out or spoof a document, or repoint
-  // this row at a different master item.
-  const { documentName, documentUrl, documentPublicId, checklistMasterId, ...safeBody } = req.body;
+  const {
+    documentName, documentUrl, documentPublicId, checklistMasterId,
+    normAnswers, workflowStatus, makerStamp, checkerStamp,
+    ...safeBody
+  } = req.body;
 
   const updated = await Checklist.findOneAndUpdate(
     { checklistMasterId: master._id },
     {
-      $set: { ...safeBody, updatedBy: req.user?.userId ?? null },
+      $set      : { ...safeBody, updatedBy: req.user?.userId ?? null },
       $setOnInsert: { checklistMasterId: master._id, createdBy: req.user?.userId ?? null },
     },
     { new: true, upsert: true, runValidators: true }
@@ -115,11 +107,132 @@ export const updateChecklist = async (req, res) => {
   return sendSuccess(res, mergeRow(master.toObject(), updated), "Checklist item updated.");
 };
 
-// POST /:masterId/document — multipart upload, field name "document"
-// (uploadDocument.single('document') middleware runs before this in
-// the router). Upserts the management row the same way updateChecklist
-// does, since uploading a document is itself a valid "first edit" that
-// can bring the row into existence.
+// ── PUT /:masterId/norms — save all norm answers at once ─────────────────────
+// Body: { normAnswers: [{ normId, normText, answerType, yesNoValue?, ... }] }
+// This does NOT change workflowStatus — that happens via /submit.
+export const saveNormAnswers = async (req, res) => {
+  const master = await ChecklistMaster.findOne({ _id: req.params.masterId, isActive: true });
+  if (!master) return sendError(res, "Checklist name not found.", 404);
+
+  const { normAnswers } = req.body;
+  if (!Array.isArray(normAnswers)) return sendError(res, "normAnswers must be an array.");
+
+  const updated = await Checklist.findOneAndUpdate(
+    { checklistMasterId: master._id },
+    {
+      $set      : { normAnswers, updatedBy: req.user?.userId ?? null },
+      $setOnInsert: { checklistMasterId: master._id, createdBy: req.user?.userId ?? null },
+    },
+    { new: true, upsert: true, runValidators: true }
+  ).lean();
+
+  return sendSuccess(res, mergeRow(master.toObject(), updated), "Norm answers saved.");
+};
+
+// ── POST /:masterId/norm-document — upload a document for a specific norm ─────
+// Multipart: field "document" = the file, field "normId" = the norm's _id string.
+// Frontend (Backend.ts) builds FormData with those two fields and POSTs here.
+// The uploadDocument.single('document') middleware runs before this in the router.
+export const uploadNormDocument = async (req, res) => {
+  if (!req.file)    return sendError(res, "No file uploaded.");
+  const { normId }  = req.body;
+  if (!normId)      return sendError(res, "normId is required.");
+
+  const master = await ChecklistMaster.findOne({ _id: req.params.masterId, isActive: true });
+  if (!master) return sendError(res, "Checklist name not found.", 404);
+
+  // Find the norm definition so we can snapshot normText.
+  const normDef = master.norms.find(n => String(n._id) === normId);
+  if (!normDef) return sendError(res, "Norm not found on this checklist.", 404);
+
+  const existing = await Checklist.findOne({ checklistMasterId: master._id });
+  const prevAnswer = existing?.normAnswers?.find(a => String(a.normId) === normId);
+
+  const originUrl = `${req.protocol}://${req.get('host')}`;
+  const stored    = await storeUploadedFile(req.file, originUrl);
+
+  // If a previous document existed for this norm, delete it.
+  if (prevAnswer?.documentUrl) {
+    await deleteStoredFile({ documentUrl: prevAnswer.documentUrl, documentPublicId: prevAnswer.documentPublicId });
+  }
+
+  // Upsert the norm answer entry.
+  const mgmt = await Checklist.findOneAndUpdate(
+    { checklistMasterId: master._id },
+    { $setOnInsert: { checklistMasterId: master._id, createdBy: req.user?.userId ?? null } },
+    { new: true, upsert: true }
+  );
+
+  const idx = mgmt.normAnswers.findIndex(a => String(a.normId) === normId);
+  const normAnswer = {
+    normId,
+    normText      : normDef.text,
+    answerType    : "document",
+    yesNoValue    : "",
+    documentName  : stored.documentName,
+    documentUrl   : stored.documentUrl,
+    documentPublicId: stored.documentPublicId,
+  };
+  if (idx >= 0) mgmt.normAnswers[idx] = normAnswer;
+  else          mgmt.normAnswers.push(normAnswer);
+  mgmt.updatedBy = req.user?.userId ?? null;
+  await mgmt.save();
+
+  return sendSuccess(res, mergeRow(master.toObject(), mgmt.toObject()), "Norm document uploaded.");
+};
+
+// ── POST /:masterId/submit — maker submits for review ────────────────────────
+// Body: { makerName: string }
+// Sets workflowStatus → "under_review", records makerStamp with auto timestamp.
+export const submitForReview = async (req, res) => {
+  const master = await ChecklistMaster.findOne({ _id: req.params.masterId, isActive: true });
+  if (!master) return sendError(res, "Checklist name not found.", 404);
+
+  const { makerName } = req.body;
+  if (!makerName?.trim()) return sendError(res, "Maker name is required.");
+
+  const mgmt = await Checklist.findOneAndUpdate(
+    { checklistMasterId: master._id },
+    {
+      $set: {
+        workflowStatus: "under_review",
+        makerStamp    : { name: makerName.trim(), timestamp: new Date(), action: "submitted" },
+        // Reset checker stamp if re-submitted after a rejection (future feature)
+        checkerStamp  : { name: "", timestamp: null, verified: false },
+        updatedBy     : req.user?.userId ?? null,
+      },
+      $setOnInsert: { checklistMasterId: master._id, createdBy: req.user?.userId ?? null },
+    },
+    { new: true, upsert: true, runValidators: true }
+  ).lean();
+
+  return sendSuccess(res, mergeRow(master.toObject(), mgmt), "Submitted for review.");
+};
+
+// ── POST /:masterId/verify — checker verifies ────────────────────────────────
+// Body: { checkerName: string }
+// Sets workflowStatus → "completed", records checkerStamp with auto timestamp.
+export const verifyChecklist = async (req, res) => {
+  const master = await ChecklistMaster.findOne({ _id: req.params.masterId, isActive: true });
+  if (!master) return sendError(res, "Checklist name not found.", 404);
+
+  const { checkerName } = req.body;
+  if (!checkerName?.trim()) return sendError(res, "Checker name is required.");
+
+  const mgmt = await Checklist.findOne({ checklistMasterId: master._id, isActive: true });
+  if (!mgmt || mgmt.workflowStatus !== "under_review") {
+    return sendError(res, "Item is not currently under review.", 400);
+  }
+
+  mgmt.workflowStatus = "completed";
+  mgmt.checkerStamp   = { name: checkerName.trim(), timestamp: new Date(), verified: true };
+  mgmt.updatedBy      = req.user?.userId ?? null;
+  await mgmt.save();
+
+  return sendSuccess(res, mergeRow(master.toObject(), mgmt.toObject()), "Checklist verified and marked complete.");
+};
+
+// ── Primary document upload / delete (unchanged logic) ───────────────────────
 export const uploadChecklistDocument = async (req, res) => {
   if (!req.file) return sendError(res, "No file uploaded. Attach a file under the 'document' field.");
 
@@ -131,20 +244,19 @@ export const uploadChecklistDocument = async (req, res) => {
     ? { documentUrl: existing.documentUrl, documentPublicId: existing.documentPublicId }
     : null;
 
-  // Real origin of THIS request (e.g. https://club-expense-management.onrender.com)
-  // — used only by the local-disk fallback in storeUploadedFile to build
-  // an absolute URL; ignored when Cloudinary is active.
   const originUrl = `${req.protocol}://${req.get('host')}`;
-  const stored = await storeUploadedFile(req.file, originUrl);
+  const stored    = await storeUploadedFile(req.file, originUrl);
 
   const updated = await Checklist.findOneAndUpdate(
     { checklistMasterId: master._id },
     {
       $set: {
-        documentName: stored.documentName,
-        documentUrl: stored.documentUrl,
+        documentName    : stored.documentName,
+        documentUrl     : stored.documentUrl,
         documentPublicId: stored.documentPublicId,
-        updatedBy: req.user?.userId ?? null,
+        // Record maker stamp for document upload action
+        makerStamp      : { name: req.body.makerName?.trim() || "", timestamp: new Date(), action: "document" },
+        updatedBy       : req.user?.userId ?? null,
       },
       $setOnInsert: { checklistMasterId: master._id, createdBy: req.user?.userId ?? null },
     },
@@ -156,11 +268,6 @@ export const uploadChecklistDocument = async (req, res) => {
   return sendSuccess(res, mergeRow(master.toObject(), updated), "Document uploaded.");
 };
 
-// DELETE /:masterId/document — removes the uploaded document without
-// affecting any other field, reverting status to 'pending' if no
-// validation date covers it. No-op (not an error) if there's nothing
-// to remove — matches how deleteChecklistMaster's cascade calls this
-// defensively too.
 export const deleteChecklistDocument = async (req, res) => {
   const master = await ChecklistMaster.findOne({ _id: req.params.masterId, isActive: true }).lean();
   if (!master) return sendError(res, "Checklist name not found.", 404);
@@ -169,10 +276,10 @@ export const deleteChecklistDocument = async (req, res) => {
   if (!mgmt || !mgmt.documentUrl) return sendSuccess(res, mergeRow(master, mgmt), "No document to remove.");
 
   await deleteStoredFile({ documentUrl: mgmt.documentUrl, documentPublicId: mgmt.documentPublicId });
-  mgmt.documentName = "";
-  mgmt.documentUrl = "";
+  mgmt.documentName     = "";
+  mgmt.documentUrl      = "";
   mgmt.documentPublicId = "";
-  mgmt.updatedBy = req.user?.userId ?? null;
+  mgmt.updatedBy        = req.user?.userId ?? null;
   await mgmt.save();
 
   return sendSuccess(res, mergeRow(master, mgmt.toObject()), "Document removed.");
