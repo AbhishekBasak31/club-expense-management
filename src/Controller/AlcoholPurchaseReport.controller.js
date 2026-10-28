@@ -30,6 +30,34 @@ function matchProduct(productByNameLower, item) {
   return raw ? productByNameLower.get(raw) : null;
 }
 
+// Delivery charge is ONE flat amount per bill (ExpenseEntry.deliveryCharge),
+// not a per-item field, so it has to be allocated to products to show it
+// per alcohol row. It's split across the bill's purchase items (non-voucher)
+// in proportion to each item's amount, so a mixed bill (alcohol + other
+// items) only charges the alcohol rows their own share — and across every
+// bill the allocated shares add back up to exactly the delivery charged.
+// Returns a Map of item index -> that item's share of the bill's delivery.
+// A bill with no purchase items (all vouchers) allocates nothing.
+function allocateDelivery(entry) {
+  const shares = new Map();
+  const delivery = Number(entry.deliveryCharge || 0);
+  if (!delivery) return shares;
+  const items = entry.items || [];
+  const purchaseIdx = [];
+  let totalAmount = 0;
+  items.forEach((item, idx) => {
+    if (item.isVoucher) return;
+    purchaseIdx.push(idx);
+    totalAmount += Number(item.amount || 0);
+  });
+  if (purchaseIdx.length === 0) return shares;
+  purchaseIdx.forEach(idx => {
+    const weight = totalAmount > 0 ? Number(items[idx].amount || 0) / totalAmount : 1 / purchaseIdx.length;
+    shares.set(idx, delivery * weight);
+  });
+  return shares;
+}
+
 // GET /monthly?month=YYYY-MM
 // One row per alcohol item: one column per DAY of that month (purchase
 // qty only, per the explicit "only purchase qty" instruction), plus a
@@ -65,14 +93,16 @@ export const getMonthlyAlcoholReport = async (req, res) => {
 
   entries.forEach(entry => {
     const day = new Date(entry.incurredDate).getDate();
-    (entry.items || []).forEach(item => {
+    const deliveryShares = allocateDelivery(entry);
+    (entry.items || []).forEach((item, idx) => {
       if (item.isVoucher) return; // purchases only, not expense/voucher items
       const product = matchProduct(productByNameLower, item);
       if (!product) return;
       const pid = String(product._id);
-      const bucket = dayData[pid][day] || { qty: 0, amount: 0 };
+      const bucket = dayData[pid][day] || { qty: 0, amount: 0, delivery: 0 };
       bucket.qty += Number(item.qty || 0);
       bucket.amount += Number(item.amount || 0);
+      bucket.delivery += deliveryShares.get(idx) || 0;
       dayData[pid][day] = bucket;
     });
   });
@@ -80,11 +110,12 @@ export const getMonthlyAlcoholReport = async (req, res) => {
   const rows = products.map(p => {
     const days = dayData[String(p._id)] || {};
     const dailyQty = {};
-    let totalQty = 0, totalPrice = 0;
+    let totalQty = 0, totalPrice = 0, totalDelivery = 0;
     Object.entries(days).forEach(([day, bucket]) => {
       dailyQty[day] = bucket.qty;
       totalQty += bucket.qty;
       totalPrice += bucket.amount;
+      totalDelivery += bucket.delivery || 0;
     });
     return {
       productId: String(p._id),
@@ -94,6 +125,7 @@ export const getMonthlyAlcoholReport = async (req, res) => {
       dailyQty, // e.g. { "1": 5, "15": 3 } — days with no purchase are simply absent
       totalQty,
       totalPrice: Math.round(totalPrice * 100) / 100,
+      deliveryAmount: Math.round(totalDelivery * 100) / 100, // this product's allocated share of bill delivery charges
     };
   });
 
@@ -133,25 +165,34 @@ export const getFinancialYearAlcoholReport = async (req, res) => {
   entries.forEach(entry => {
     const d = new Date(entry.incurredDate);
     const mIdx = d.getMonth(); // 0-11
-    (entry.items || []).forEach(item => {
+    const deliveryShares = allocateDelivery(entry);
+    (entry.items || []).forEach((item, idx) => {
       if (item.isVoucher) return;
       const product = matchProduct(productByNameLower, item);
       if (!product) return;
       const pid = String(product._id);
-      const bucket = monthData[pid][mIdx] || { qty: 0, amount: 0 };
+      const bucket = monthData[pid][mIdx] || { qty: 0, amount: 0, delivery: 0 };
       bucket.qty += Number(item.qty || 0);
       bucket.amount += Number(item.amount || 0);
+      bucket.delivery += deliveryShares.get(idx) || 0;
       monthData[pid][mIdx] = bucket;
     });
   });
 
   const rows = products.map(p => {
     const months = FY_MONTH_ORDER.map(mIdx => {
-      const bucket = monthData[String(p._id)]?.[mIdx] || { qty: 0, amount: 0 };
-      return { monthIndex: mIdx, qty: bucket.qty, price: Math.round(bucket.amount * 100) / 100 };
+      const bucket = monthData[String(p._id)]?.[mIdx] || { qty: 0, amount: 0, delivery: 0 };
+      return {
+        monthIndex: mIdx,
+        qty: bucket.qty,
+        price: Math.round(bucket.amount * 100) / 100,
+        delivery: Math.round((bucket.delivery || 0) * 100) / 100, // this month's allocated share of bill delivery charges
+      };
     });
     const totalQty = months.reduce((s, m) => s + m.qty, 0);
     const totalPrice = months.reduce((s, m) => s + m.price, 0);
+    // Sum of the already-rounded monthly figures, so the per-month columns always add up exactly to the year's Delivery column.
+    const totalDelivery = months.reduce((s, m) => s + m.delivery, 0);
     return {
       productId: String(p._id),
       alcoholName: p.name,
@@ -160,6 +201,7 @@ export const getFinancialYearAlcoholReport = async (req, res) => {
       months, // 12 entries, April first
       totalQty,
       totalPrice: Math.round(totalPrice * 100) / 100,
+      deliveryAmount: Math.round(totalDelivery * 100) / 100, // this product's allocated share of bill delivery charges for the year
     };
   });
 
