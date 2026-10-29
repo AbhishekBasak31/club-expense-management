@@ -3,6 +3,7 @@ import {
   createExpense, getExpenses, getExpenseById,
   updateExpense, deleteExpense, getExpenseSummary, getExpenseRegister,getExpenseReport,
   verifyExpenseItem, getMonthlyExpenseSummary, getExpenseTotals,
+  getPurchaseLedger,
 } from "../Controller/Expense.controller.js";
 import { authenticate } from "../../src/Middleware/auth.middleware.js";
 import { asyncHandler } from "../../src/Utils/Asynchandeler.js";
@@ -16,6 +17,7 @@ router.get   ("/totals",   asyncHandler(getExpenseTotals));
 router.get   ("/monthly-summary", asyncHandler(getMonthlyExpenseSummary));
 router.get   ("/register", asyncHandler(getExpenseRegister)); // expense register report
 router.get("/report",   asyncHandler(getExpenseReport));
+router.get   ("/purchase-ledger", asyncHandler(getPurchaseLedger)); // vendor-wise purchase ledger (due-amount only, no payment posting yet)
 router.post  ("/",    asyncHandler(createExpense));
 router.get   ("/",    asyncHandler(getExpenses));
 router.get   ("/:id", asyncHandler(getExpenseById));

@@ -2,6 +2,7 @@ import { ExpenseEntry } from "../Model/Expense.modal.js";
 import { Product } from "../Model/product.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
+
 // ─────────────────────────────────────────────────────────────────
 // HELPER — recalculate all amounts server-side (never trust client)
 // ─────────────────────────────────────────────────────────────────
@@ -561,6 +562,129 @@ export const getExpenseRegister = async (req, res) => {
   );
 
   return sendSuccess(res, { rows, totals, count: rows.length });
+};
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/v1/expenses/purchase-ledger?from=&to=
+// Vendor / category-hierarchy / "which period" filtering all happens
+// CLIENT-SIDE, same pattern as the Alcohol Purchase Report — this just
+// returns every final PURCHASE line item in the date range as a flat
+// ledger row, already carrying its vendor + full 5-level category
+// lineage (Group Head, Group, Category, Sub-Category, Base Category) so
+// the frontend can filter/re-group without another request.
+//
+// ASSUMPTION (flagging per convention, not guessing silently): payment
+// posting does not exist in this system yet, so this ledger is built
+// purely on the DUE amount — every row is a Credit (increases what's
+// owed to the vendor) and Debit is always 0, except a negative
+// roundOff, which reduces the amount due and is shown as a Debit
+// instead of a negative Credit. The running/closing balance is
+// therefore always the total still due for whatever is filtered.
+// Once payment posting exists, actual payment rows (Debit, reduces
+// what's owed) should be merged into this list chronologically.
+//
+// Voucher items (isVoucher) and salary/allowance items (isAllowance)
+// are never purchases — excluded entirely, this is a PURCHASE ledger.
+//
+// Entry-level deliveryCharge/roundOff (not attached to any one item)
+// are emitted as their own synthetic row, ONCE per entry (guarded by
+// idx === 0, same "once per entry not once per item" rule as
+// getExpenseRegister above), attributed to the vendor of that entry's
+// FIRST purchase item. If a single bill genuinely spans multiple
+// vendors this misattributes that bill's delivery/round-off share to
+// whichever vendor's item happened to be first — flagged here rather
+// than guessing a split, since multi-vendor bills are an edge case.
+// ─────────────────────────────────────────────────────────────────
+export const getPurchaseLedger = async (req, res) => {
+  const { from, to } = req.query;
+  const match = { status: "final" };
+  // incurredDate — same basis as every other report endpoint in this file.
+  if (from && to) match.incurredDate = { $gte: new Date(from), $lte: new Date(to) };
+
+  const entries = await ExpenseEntry.find(match)
+    .sort({ incurredDate: 1, _id: 1 })
+    .lean();
+
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const rows = [];
+
+  for (const entry of entries) {
+    const purchaseItems = (entry.items || []).filter(
+      (it) => !it.isVoucher && !it.isAllowance
+    );
+    if (purchaseItems.length === 0) continue; // voucher/salary-only entry — not a purchase
+
+    purchaseItems.forEach((item, idx) => {
+      rows.push({
+        entryId: entry._id,
+        itemId: item._id,
+        date: entry.date,
+        incurredDate: entry.incurredDate,
+        referenceNumber: entry.referenceNumber,
+        billNo: item.billNo || "",
+        vendorId: item.vendorId || null,
+        vendorName: item.vendorName || "",
+        groupHeadName: item.groupHeadName || "",
+        groupName: item.groupName || "",
+        categoryName: item.categoryName || "",
+        subCategoryName: item.subCategoryName || "",
+        baseCategoryName: item.baseCategoryName || "",
+        description: item.description || "",
+        vchType: "Purchase",
+        debit: 0,
+        credit: round2(item.netAmount),
+      });
+
+      // Delivery / round-off — once per entry, pinned to the first item.
+      if (idx === 0) {
+        if (entry.deliveryCharge) {
+          rows.push({
+            entryId: entry._id,
+            itemId: null,
+            date: entry.date,
+            incurredDate: entry.incurredDate,
+            referenceNumber: entry.referenceNumber,
+            billNo: item.billNo || "",
+            vendorId: item.vendorId || null,
+            vendorName: item.vendorName || "",
+            groupHeadName: item.groupHeadName || "",
+            groupName: item.groupName || "",
+            categoryName: "Delivery Charges",
+            subCategoryName: "",
+            baseCategoryName: "",
+            description: "Delivery Charges",
+            vchType: "Journal",
+            debit: 0,
+            credit: round2(entry.deliveryCharge),
+          });
+        }
+        if (entry.roundOff) {
+          const ro = Number(entry.roundOff) || 0;
+          rows.push({
+            entryId: entry._id,
+            itemId: null,
+            date: entry.date,
+            incurredDate: entry.incurredDate,
+            referenceNumber: entry.referenceNumber,
+            billNo: item.billNo || "",
+            vendorId: item.vendorId || null,
+            vendorName: item.vendorName || "",
+            groupHeadName: item.groupHeadName || "",
+            groupName: item.groupName || "",
+            categoryName: "Round Off",
+            subCategoryName: "",
+            baseCategoryName: "",
+            description: "Round Off",
+            vchType: "Journal",
+            debit: ro < 0 ? round2(Math.abs(ro)) : 0,
+            credit: ro > 0 ? round2(ro) : 0,
+          });
+        }
+      }
+    });
+  }
+
+  return sendSuccess(res, { rows, count: rows.length });
 };
 
 export const getExpenseReport = async (req, res) => {
