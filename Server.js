@@ -38,6 +38,7 @@ import ServiceMaintenanceRouter from "./src/Routers/ServiceMaintaince.route.js";
 import DailyBookingRouter from "./src/Routers/DailyBookings.route.js";
 import  DigitalMenuItemRouter from "./src/Routers/DigitalMenu.route.js";
 import PackageRouter from "./src/Routers/Package.route.js";
+import BudgetRouter from "./src/Routers/Budget.route.js";
 const app  = express();
 const PORT = process.env.PORT || 7000; 
 
@@ -148,7 +149,7 @@ app.use("/api/v1/crockery-breakage", CrockeryBreakageRouter);
 app.use("/api/v1/service-maintenance", ServiceMaintenanceRouter);
 app.use("/api/v1/daily-bookings", DailyBookingRouter);
 app.use("/api/v1/digital-menu-items",  DigitalMenuItemRouter);
-
+app.use("/api/v1/budgets", BudgetRouter);
 app.use('/uploads', express.static('uploads'));
 
 
