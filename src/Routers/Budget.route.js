@@ -1,6 +1,7 @@
 import express from "express";
 import {
-  getBudgetAnalysis, getBudgetSuggestions, getBudgetAlerts, getRevenueHistory, saveBudgetPlan,saveBudgetSettings
+  getBudgetAnalysis, getBudgetSuggestions, getBudgetAlerts, getRevenueHistory,
+  saveBudgetPlan, saveBudgetSettings,
 } from "../Controller/Budget.controller.js";
 import { authenticate } from "../../src/Middleware/auth.middleware.js";
 import { asyncHandler } from "../../src/Utils/Asynchandeler.js";
@@ -15,5 +16,5 @@ router.get("/alerts",   asyncHandler(getBudgetAlerts));
 router.get("/revenues", asyncHandler(getRevenueHistory));
 router.put("/settings", asyncHandler(saveBudgetSettings));
 router.put("/:month",   asyncHandler(saveBudgetPlan));
- 
+
 export default router;
