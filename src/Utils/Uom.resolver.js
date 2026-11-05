@@ -3,19 +3,24 @@
 // the exact rules are unit-tested and shared by the controllers.
 //
 // THE MODEL
-//  • A UOM has a TYPE: volume | weight | count | length ("" = not classified yet).
-//  • Volume and weight units carry a BASE AMOUNT: how many ml (or g) are in 1 of
-//    them — ML = 1, Litre = 1000, Peg = 30, Large Peg = 60. These are global, so
-//    ML ↔ Litre ↔ Peg is never entered per product.
-//  • A product conversion links a COUNT unit to something measurable, per product:
-//    1 Bottle = 750 ML, 1 Crate = 12 Bottle. (Volume→volume is rejected: the base
-//    amounts already define it.)
-//  • toBase() walks a product's conversions (either direction) from any unit until
-//    it reaches a volume/weight unit, e.g. Crate → Bottle → ML = 9,000 ml.
+//  • A UOM has a TYPE: volume | container | weight | count | length ("" = not yet set).
+//  • Volume, container and weight units carry an AMOUNT (baseFactor): how many ml (or g)
+//    are in 1 of them.
+//       volume    — a measure:        ML = 1, Litre = 1000, Peg = 30, Large Peg = 60
+//       container — a bottle/can/keg: "750 ml Bottle" = 750, "1000 ml Bottle" = 1000
+//    A product whose unit is "750 ml Bottle" therefore KNOWS it is 750 ml — no per-product
+//    conversion is needed for the bottle size, and pegs follow (750 ÷ 30 = 25).
+//  • A product conversion is now only for PACKAGING, per product, linking a COUNT unit to
+//    something measurable: 1 Crate = 12 × "750 ml Bottle". (Anything between two
+//    amount-carrying volume/container units is rejected: their amounts already define it.)
+//  • toBase() walks a product's conversions (either direction) from any unit until it reaches
+//    a unit that carries an amount, e.g. Crate → 750 ml Bottle = 9,000 ml.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const UOM_TYPES = ["volume", "weight", "count", "length"];
-export const BASE_UNIT = { volume: "ml", weight: "g" };
+export const UOM_TYPES = ["volume", "container", "weight", "count", "length"];
+export const BASE_UNIT = { volume: "ml", container: "ml", weight: "g" };
+const CARRIES_AMOUNT = ["volume", "container", "weight"];
+const amountLabel = (t) => (t === "container" ? "bottle/container" : t);
 
 export const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
 const round3 = (n) => Math.round(n * 1000) / 1000;
@@ -27,16 +32,18 @@ export { hasValue };
 export function validateUomShape({ type, baseFactor }) {
   const t = type || "";
   if (t && !UOM_TYPES.includes(t)) return `Type must be one of: ${UOM_TYPES.join(", ")}.`;
-  if (t === "volume" || t === "weight") {
+  if (CARRIES_AMOUNT.includes(t)) {
     if (!hasValue(baseFactor)) {
-      return `A ${t} unit needs a base amount — how many ${BASE_UNIT[t]} are in 1 of it (Litre = 1000, Peg = 30).`;
+      return t === "container"
+        ? "A bottle/container unit needs its amount — how many ml it holds (750 for a 750 ml bottle)."
+        : `A ${t} unit needs a base amount — how many ${BASE_UNIT[t]} are in 1 of it (Litre = 1000, Peg = 30).`;
     }
     const n = Number(baseFactor);
-    if (!Number.isFinite(n) || n <= 0) return "Base amount must be a number greater than 0.";
+    if (!Number.isFinite(n) || n <= 0) return `${t === "container" ? "Amount" : "Base amount"} must be a number greater than 0.`;
   } else if (hasValue(baseFactor)) {
     return t
-      ? `Only volume and weight units carry a base amount (this one is ${t}).`
-      : "Choose the unit type first — a base amount only applies to volume and weight units.";
+      ? `Only volume, weight and bottle/container units carry an amount (this one is ${t}).`
+      : "Choose the unit type first — an amount only applies to volume, weight and bottle/container units.";
   }
   return null;
 }
@@ -46,6 +53,11 @@ export function validatePair(fromUom, toUom) {
   if (String(fromUom._id) === String(toUom._id)) return "From and To unit must be different.";
   const ft = fromUom.type || "";
   const tt = toUom.type || "";
+  // A bottle/container already carries its ml, so linking it to ml, a peg or another bottle size
+  // would only repeat (or contradict) what the UOM master says.
+  if ((ft === "container" && (tt === "container" || tt === "volume")) || (tt === "container" && ft === "volume")) {
+    return `${fromUom.name} → ${toUom.name}: a bottle/container unit already carries its ml (set in the UOM master), so it needs no conversion to ${tt === "container" ? "another bottle size" : "a measure"}. Use a count unit such as Crate on one side.`;
+  }
   if (ft && ft === tt && (ft === "volume" || ft === "weight" || ft === "length")) {
     return `${fromUom.name} → ${toUom.name} is a ${ft}-to-${ft} conversion. Those are defined once in the UOM master (base amounts), not per product — put a count unit such as Bottle or Crate on one side.`;
   }
@@ -62,9 +74,9 @@ export function toBase({ uoms, conversions, uomId, qty = 1 }) {
   const fail = (reason) => ({ ok: false, kind: null, base: null, baseQty: null, path: [], reason });
   if (!start) return fail("Unit not found.");
 
-  const measurable = (u) => (u.type === "volume" || u.type === "weight") && Number(u.baseFactor) > 0;
+  const measurable = (u) => CARRIES_AMOUNT.includes(u.type) && Number(u.baseFactor) > 0;
   const finish = (unit, mult, path) => ({
-    ok: true, kind: unit.type, base: BASE_UNIT[unit.type],
+    ok: true, kind: unit.type === "container" ? "volume" : unit.type, base: BASE_UNIT[unit.type],
     baseQty: round3(Number(qty) * mult * Number(unit.baseFactor)), path,
   });
   if (measurable(start)) return finish(start, 1, []);
@@ -100,7 +112,7 @@ export function toBase({ uoms, conversions, uomId, qty = 1 }) {
       queue.push({ id: e.to, mult, path });
     }
   }
-  return fail(`No conversion path from ${start.name} to a volume or weight unit — add one (e.g. 1 ${start.name} = 750 ML) for this product.`);
+  return fail(`${start.name} has no amount and no conversion to a unit that has one — give the product a sized bottle unit (e.g. "750 ml Bottle"), or add a conversion such as 1 ${start.name} = 12 × "750 ml Bottle".`);
 }
 
 // Whole servings plus the leftover, never fractional pegs: 700 ml of 30 ml pegs
@@ -128,10 +140,12 @@ export const ALCOHOL_UOM_SEED = [
   { name: "Peg", abbreviation: "peg", type: "volume", baseFactor: 30, aliases: ["peg", "pg"] },
   { name: "Large Peg", abbreviation: "lpeg", type: "volume", baseFactor: 60, aliases: ["large peg", "lpeg"] },
   { name: "Wine Glass", abbreviation: "wglass", type: "volume", baseFactor: 150, aliases: ["wine glass", "wglass"] },
-  { name: "Bottle", abbreviation: "btl", type: "count", baseFactor: null, aliases: ["bottle", "btl"] },
   { name: "Crate", abbreviation: "crate", type: "count", baseFactor: null, aliases: ["crate", "case"] },
-  { name: "Can", abbreviation: "can", type: "count", baseFactor: null, aliases: ["can"] },
-  { name: "Keg", abbreviation: "keg", type: "count", baseFactor: null, aliases: ["keg"] },
+  // Superseded by SIZED units ("750 ml Bottle", "330 ml Can" …). If one already exists it is still given a
+  // type so it stops showing as unclassified, but it is never created.
+  { name: "Bottle", abbreviation: "btl", type: "count", baseFactor: null, aliases: ["bottle", "btl"], optional: true },
+  { name: "Can", abbreviation: "can", type: "count", baseFactor: null, aliases: ["can"], optional: true },
+  { name: "Keg", abbreviation: "keg", type: "count", baseFactor: null, aliases: ["keg"], optional: true },
 ];
 
 // existing = the ACTIVE UOMs. Nothing is changed by this function — it only plans:
@@ -144,6 +158,7 @@ export function planSeed(existing) {
   for (const seed of ALCOHOL_UOM_SEED) {
     const matches = existing.filter((u) => seed.aliases.includes(norm(u.name)) || seed.aliases.includes(norm(u.abbreviation)));
     if (!matches.length) {
+      if (seed.optional) continue;
       plan.create.push({ name: seed.name, abbreviation: seed.abbreviation, type: seed.type, baseFactor: seed.baseFactor });
       continue;
     }
@@ -160,6 +175,44 @@ export function planSeed(existing) {
       });
     }
     dupes.forEach((d) => plan.conflicts.push({ _id: String(d._id), name: d.name, reason: `Duplicate of "${first.name}" — merge or deactivate it.` }));
+  }
+  return plan;
+}
+
+// ── Sized bottle units: "750 ml Bottle" = a container unit holding 750 ml ─────
+export const bottleUnitName = (size) => `${size} ml Bottle`;
+export const bottleUnitAbbr = (size) => `btl${size}`;
+
+export function validateSizes(sizes) {
+  if (!Array.isArray(sizes) || sizes.length === 0) return "Give at least one bottle size in ml.";
+  if (sizes.length > 40) return "At most 40 bottle sizes at a time.";
+  for (const v of sizes) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0 || n > 20000) return `"${v}" is not a valid bottle size — use a number of ml between 1 and 20,000.`;
+  }
+  return null;
+}
+
+// Plans the sized bottle units for a list of ml sizes. existing = ACTIVE UOMs. Changes nothing.
+//   create    — no container unit holds that many ml yet
+//   exists    — a container unit with that amount is already there
+//   conflicts — the usual name is taken by a unit that is NOT a container of that size
+export function planBottleSizes(existing, sizes) {
+  const plan = { create: [], exists: [], conflicts: [] };
+  const seen = new Set();
+  for (const size of sizes.map(Number).sort((a, b) => a - b)) {
+    if (seen.has(size)) continue;
+    seen.add(size);
+    const have = existing.find((u) => u.type === "container" && Number(u.baseFactor) === size);
+    if (have) { plan.exists.push({ name: have.name, baseFactor: size }); continue; }
+    const name = bottleUnitName(size);
+    const abbreviation = bottleUnitAbbr(size);
+    const clash = existing.find((u) => [norm(u.name), norm(u.abbreviation)].some((x) => x === norm(name) || x === norm(abbreviation)));
+    if (clash) {
+      plan.conflicts.push({ name, baseFactor: size, reason: `"${clash.name}" already uses this name or abbreviation but is not a ${size} ml bottle unit — rename or fix it first.` });
+      continue;
+    }
+    plan.create.push({ name, abbreviation, type: "container", baseFactor: size });
   }
   return plan;
 }

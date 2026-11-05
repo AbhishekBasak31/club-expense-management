@@ -197,7 +197,7 @@ export const getReadiness = async (req, res) => {
   const rows = [...ctx.productsById.values()]
     .filter((p) => p.isActive !== false && norm(p.subCategoryName) === sub)
     .map((p) => {
-      const base = { productId: String(p._id), name: p.name, brandName: p.brandName || "", uomName: p.uomName || "" };
+      const base = { productId: String(p._id), name: p.name, brandName: p.brandName || "", uomName: p.uomName || "", uomId: p.uomId ? String(p.uomId) : "" };
       if (!p.uomId) return { ...base, status: "no-uom", unitMl: null, suggestedMl: parseSizeFromName(p.name) };
       const r = toBase({ uoms: ctx.uoms, conversions: byProduct.get(String(p._id)) || [], uomId: p.uomId, qty: 1 });
       return r.ok
@@ -217,13 +217,17 @@ export const getReadiness = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// POST /product-conversions/bulk  { items:[{productId,fromUomId,toUomId,conversionFactor}], dryRun? }
-// Same rules as create, row by row; one bad row never blocks the others, and rows
-// that already exist are reported as "exists" instead of failing. dryRun checks
-// everything and writes nothing.
+// POST /product-conversions/bulk  { items:[{productId,fromUomId,toUomId,conversionFactor}], dryRun?, allowUpdate? }
+// Same rules as create, row by row; one bad row never blocks the others.
+//   • no such conversion yet            → created
+//   • identical conversion, same factor → "exists" (nothing to do)
+//   • identical conversion, NEW factor  → "exists", unless allowUpdate is true, in which case
+//                                          its factor is updated ("updated", with previousFactor).
+//     Changing a size changes how existing stock is read, so it is always opt-in.
+// dryRun checks everything and writes nothing — the Excel upload uses it to show a preview.
 // ─────────────────────────────────────────────────────────────────
 export const bulkCreateConversions = async (req, res) => {
-  const { items, dryRun } = req.body || {};
+  const { items, dryRun, allowUpdate } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) return sendError(res, "Provide at least one conversion.");
   if (items.length > 500) return sendError(res, "A bulk request can hold at most 500 conversions.");
 
@@ -231,31 +235,112 @@ export const bulkCreateConversions = async (req, res) => {
   const results = [];
   for (let index = 0; index < items.length; index++) {
     const it = items[index] || {};
+
+    // An identical active conversion already there?
+    const existing = ctx.activeConversions.find((c) => same(c.productId, it.productId) && same(c.fromUomId, it.fromUomId) && same(c.toUomId, it.toUomId));
+    if (existing) {
+      const f = Number(it.conversionFactor);
+      if (!Number.isFinite(f) || f <= 0) { results.push({ index, ok: false, action: "error", error: "Conversion factor must be greater than 0." }); continue; }
+      const previousFactor = Number(existing.conversionFactor);
+      if (!allowUpdate || previousFactor === f) { results.push({ index, ok: true, action: "exists", previousFactor }); continue; }
+
+      const r = evaluateConversion(it, ctx, existing._id); // same rules; ignores the row being updated
+      if (!r.ok) { results.push({ index, ok: false, action: "error", error: r.error }); continue; }
+      if (dryRun) { results.push({ index, ok: true, action: "would-update", previousFactor }); continue; }
+      try {
+        const doc = await ProductConversion.findById(existing._id);
+        if (!doc) { results.push({ index, ok: false, action: "error", error: "Conversion not found." }); continue; }
+        Object.assign(doc, r.names);
+        doc.conversionFactor = f;
+        doc.updatedBy = uid(req);
+        await doc.save();
+        existing.conversionFactor = f; // later rows in the same batch see the new factor
+        results.push({ index, ok: true, action: "updated", previousFactor });
+      } catch {
+        results.push({ index, ok: false, action: "error", error: "Failed to update this row." });
+      }
+      continue;
+    }
+
     const r = evaluateConversion(it, ctx);
     if (!r.ok) {
       const exists = r.status === 409 && /already has an active/.test(r.error);
       results.push({ index, ok: exists, action: exists ? "exists" : "error", ...(exists ? {} : { error: r.error }) });
       continue;
     }
-    if (dryRun) { results.push({ index, ok: true, action: "would-create" }); }
-    else {
-      try {
-        const created = await ProductConversion.create({
-          productId: it.productId, fromUomId: it.fromUomId, toUomId: it.toUomId, conversionFactor: r.factor,
-          ...r.names, createdBy: uid(req), updatedBy: uid(req),
-        });
-        results.push({ index, ok: true, action: "created" });
-        ctx.activeConversions.push(created.toObject ? created.toObject() : created); // later rows in the same batch see it
-      } catch (err) {
-        results.push({ index, ok: false, action: "error", error: dupFromIndex(err) || "Failed to save this row." });
-        continue;
-      }
+    if (dryRun) {
+      results.push({ index, ok: true, action: "would-create" });
+      ctx.activeConversions.push({ _id: `dry-${index}`, productId: it.productId, fromUomId: it.fromUomId, toUomId: it.toUomId, conversionFactor: r.factor });
+      continue;
     }
-    if (dryRun) ctx.activeConversions.push({ _id: `dry-${index}`, productId: it.productId, fromUomId: it.fromUomId, toUomId: it.toUomId, conversionFactor: r.factor });
+    try {
+      const created = await ProductConversion.create({
+        productId: it.productId, fromUomId: it.fromUomId, toUomId: it.toUomId, conversionFactor: r.factor,
+        ...r.names, createdBy: uid(req), updatedBy: uid(req),
+      });
+      results.push({ index, ok: true, action: "created" });
+      ctx.activeConversions.push(created.toObject ? created.toObject() : created); // later rows in the same batch see it
+    } catch (err) {
+      results.push({ index, ok: false, action: "error", error: dupFromIndex(err) || "Failed to save this row." });
+    }
   }
   const count = (a) => results.filter((x) => x.action === a).length;
-  return sendSuccess(res, {
-    dryRun: !!dryRun, results,
-    summary: { created: count("created"), wouldCreate: count("would-create"), exists: count("exists"), errors: count("error") },
-  }, dryRun ? "Preview only — nothing was saved." : `${count("created")} conversion${count("created") === 1 ? "" : "s"} created.`, dryRun ? 200 : 201);
+  const summary = { created: count("created"), wouldCreate: count("would-create"), updated: count("updated"), wouldUpdate: count("would-update"), exists: count("exists"), errors: count("error") };
+  const parts = [`${summary.created} created`, summary.updated ? `${summary.updated} updated` : null].filter(Boolean).join(", ");
+  return sendSuccess(res, { dryRun: !!dryRun, results, summary }, dryRun ? "Preview only — nothing was saved." : `${parts}.`, dryRun ? 200 : 201);
+};
+
+// ─────────────────────────────────────────────────────────────────
+// POST /product-conversions/assign-units  { items:[{ productId, uomId }], dryRun? }
+// Gives products a SIZED BOTTLE UNIT ("750 ml Bottle"), so each one knows its own ml and no per-product
+// conversion is needed. Only container units (a unit that holds a fixed number of ml) are accepted.
+// A product already on that unit is reported as "same". One bad row never blocks the others; dryRun
+// checks everything and writes nothing — the Excel upload uses it for its preview.
+// Only the product's unit (uomId / uomName) is touched.
+// ─────────────────────────────────────────────────────────────────
+export const assignBottleUnits = async (req, res) => {
+  const { items, dryRun } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) return sendError(res, "Provide at least one product.");
+  if (items.length > 500) return sendError(res, "At most 500 products at a time.");
+
+  const [uoms, products] = await Promise.all([
+    UOM.find({}).lean(),
+    Product.find({ _id: { $in: items.map((i) => i?.productId).filter(Boolean) } }).lean(),
+  ]);
+  const uomsById = new Map(uoms.map((u) => [String(u._id), u]));
+  const productsById = new Map(products.map((p) => [String(p._id), p]));
+
+  const results = [];
+  for (let index = 0; index < items.length; index++) {
+    const it = items[index] || {};
+    const fail = (error) => results.push({ index, ok: false, action: "error", error });
+    const product = productsById.get(String(it.productId));
+    if (!product) { fail("Product not found."); continue; }
+    const uom = uomsById.get(String(it.uomId));
+    if (!uom) { fail("Unit not found."); continue; }
+    if (uom.isActive === false) { fail("That unit is not active."); continue; }
+    if (uom.type !== "container" || !(Number(uom.baseFactor) > 0)) {
+      fail(`${uom.name} is not a bottle/container unit — choose a sized bottle such as "750 ml Bottle".`);
+      continue;
+    }
+    const previousUomName = product.uomName || uomsById.get(String(product.uomId))?.name || "";
+    const base = { index, ok: true, ml: Number(uom.baseFactor), previousUomName };
+    if (same(product.uomId, uom._id)) { results.push({ ...base, action: "same" }); continue; }
+    if (dryRun) { results.push({ ...base, action: "would-assign" }); continue; }
+    try {
+      const doc = await Product.findById(product._id);
+      if (!doc) { fail("Product not found."); continue; }
+      doc.uomId = uom._id;
+      doc.uomName = uom.name;
+      await doc.save();
+      product.uomId = uom._id; // a later row for the same product sees it
+      results.push({ ...base, action: "assigned" });
+    } catch {
+      fail("Failed to update this product.");
+    }
+  }
+  const count = (a) => results.filter((x) => x.action === a).length;
+  const summary = { assigned: count("assigned"), wouldAssign: count("would-assign"), same: count("same"), errors: count("error") };
+  return sendSuccess(res, { dryRun: !!dryRun, results, summary },
+    dryRun ? "Preview only — nothing was saved." : `${summary.assigned} product${summary.assigned === 1 ? "" : "s"} updated.`, dryRun ? 200 : 201);
 };

@@ -1,6 +1,6 @@
 import express from "express";
 import {
-  createUOM, getUOMs, getUOMById, updateUOM, deleteUOM, getUomDiagnostics, seedStandardUoms,
+  createUOM, getUOMs, getUOMById, updateUOM, deleteUOM, getUomDiagnostics, seedStandardUoms, seedBottleSizes,
 } from "../Controller/Uom.controller.js";
 import { authenticate } from "../../src/Middleware/auth.middleware.js";
 import { asyncHandler } from "../../src/Utils/Asynchandeler.js";
@@ -11,6 +11,7 @@ router.use(authenticate);
 // Fixed paths BEFORE /:id so they are not read as an id.
 router.get   ("/diagnostics", asyncHandler(getUomDiagnostics));
 router.post  ("/seed",        asyncHandler(seedStandardUoms)); // preview unless { apply: true }
+router.post  ("/bottle-sizes", asyncHandler(seedBottleSizes)); // { sizes:[…], apply? } — preview unless apply
 
 router.post  ("/",    asyncHandler(createUOM));
 router.get   ("/",    asyncHandler(getUOMs));

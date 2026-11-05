@@ -2,7 +2,7 @@ import { UOM } from "../Model/uom.model.js";
 import { ProductConversion } from "../Model/productconv.model.js";
 import { Product } from "../Model/product.model.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
-import { validateUomShape, planSeed, norm, hasValue } from "../Utils/Uom.resolver.js";
+import { validateUomShape, planSeed, planBottleSizes, validateSizes, norm, hasValue } from "../Utils/Uom.resolver.js";
 
 const uid = (req) => req.user?.userId ?? null;
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -198,4 +198,25 @@ export const seedStandardUoms = async (req, res) => {
     }
   }
   return sendSuccess(res, { applied: apply, plan }, apply ? "Standard units set up." : "Preview only — nothing was changed.");
+};
+
+// POST /uoms/bottle-sizes  { sizes:[350,750,1000], apply? }
+// Creates sized bottle units — "750 ml Bottle" (abbreviation btl750), a container unit holding 750 ml —
+// so a product whose unit is one of them knows its own size. A PREVIEW unless apply is true. A size that
+// already exists under any name is never created twice.
+export const seedBottleSizes = async (req, res) => {
+  const apply = req.body?.apply === true;
+  const sizes = req.body?.sizes;
+  const sizeError = validateSizes(sizes);
+  if (sizeError) return sendError(res, sizeError);
+
+  const all = await UOM.find({ isActive: true }).lean();
+  const plan = planBottleSizes(all, sizes);
+  if (apply) {
+    for (const c of plan.create) {
+      await UOM.create({ ...c, createdBy: uid(req), updatedBy: uid(req) });
+    }
+  }
+  return sendSuccess(res, { applied: apply, plan },
+    apply ? `${plan.create.length} bottle unit${plan.create.length === 1 ? "" : "s"} created.` : "Preview only — nothing was changed.");
 };

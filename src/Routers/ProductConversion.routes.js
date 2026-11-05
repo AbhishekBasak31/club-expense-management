@@ -1,7 +1,7 @@
 import express from "express";
 import {
   createConversion, getConversions, getConversionById, updateConversion, deleteConversion,
-  resolveQuantity, getReadiness, bulkCreateConversions,
+  resolveQuantity, getReadiness, bulkCreateConversions, assignBottleUnits,
 } from "../Controller/ProductConversion.controller.js";
 import { authenticate } from "../../src/Middleware/auth.middleware.js";
 import { asyncHandler } from "../../src/Utils/Asynchandeler.js";
@@ -13,6 +13,7 @@ router.use(authenticate);
 router.get ("/resolve",   asyncHandler(resolveQuantity));        // ?productId=&uomId=&qty=&servingUomId=
 router.get ("/readiness", asyncHandler(getReadiness));           // ?subCategoryName=Alcohol
 router.post("/bulk",      asyncHandler(bulkCreateConversions));  // { items:[…], dryRun? }
+router.post("/assign-units", asyncHandler(assignBottleUnits));   // { items:[{productId,uomId}], dryRun? }
 
 router.post  ("/",    asyncHandler(createConversion));
 router.get   ("/",    asyncHandler(getConversions)); // ?productId=xxx
