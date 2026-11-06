@@ -7,7 +7,7 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 // in this app are always server-recalculated rather than client-sent.
 
 export const createAlcoholPurchaseRequirement = async (req, res) => {
-  const { date, alcoholItemDetails, currentQty, currentPrice, reqQty } = req.body;
+  const { date, alcoholItemDetails, currentQty, currentPrice, reqQty, productId, source } = req.body;
   if (!date) return sendError(res, "Date is required.");
   if (!alcoholItemDetails?.trim()) return sendError(res, "Alcohol item details are required.");
   if (currentQty == null || Number(currentQty) < 0) return sendError(res, "A valid current quantity is required.");
@@ -19,6 +19,8 @@ export const createAlcoholPurchaseRequirement = async (req, res) => {
     currentQty: Number(currentQty), currentPrice: Number(currentPrice), reqQty: Number(reqQty),
     totalValue: Math.round(Number(currentQty) * Number(currentPrice) * 100) / 100,
     reqQtyPrice: Math.round(Number(reqQty) * Number(currentPrice) * 100) / 100,
+    productId: productId || null,
+    source: source === "low-stock" ? "low-stock" : "manual",
     issuedBy: req.user?.userId ?? null,
     createdBy: req.user?.userId ?? null,
     updatedBy: req.user?.userId ?? null,
@@ -33,8 +35,10 @@ export const createAlcoholPurchaseRequirement = async (req, res) => {
 // pagination/aggregation isn't needed yet; revisit if the list grows
 // into the thousands).
 export const getAlcoholPurchaseRequirements = async (req, res) => {
-  const { search, dateFrom, dateTo } = req.query;
+  const { search, dateFrom, dateTo, status, productId } = req.query;
   const filter = { isActive: true };
+  if (status) filter.status = status;       // e.g. ?status=open
+  if (productId) filter.productId = productId;
   if (search) filter.alcoholItemDetails = { $regex: search, $options: "i" };
   if (dateFrom || dateTo) {
     filter.date = {};

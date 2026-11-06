@@ -53,7 +53,12 @@ const ProductSchema = new mongoose.Schema(
     expiryDate     : { type: Date,   default: null }, // for a specific batch/lot, if tracked
     barcode        : { type: String, trim: true, default: "" },
 
-    reorderLevel   : { type: Number, default: 0 },
+    // ── Stock levels, in the product's OWN unit (bottles). reorderLevel is the MINIMUM — below it the alcohol
+    // stock list turns the item "low" and enables the purchase request. The three below were added for it. ──
+    reorderLevel   : { type: Number, default: 0 },   // Min
+    maxStockLevel  : { type: Number, default: 0 },   // Max  (0 = not set)
+    barParLevel    : { type: Number, default: 0 },   // what the bar should hold at the start of a day (0 = not set)
+    leadTimeDays   : { type: Number, default: 0 },   // supplier lead time, for smarter minimums later
     isActive       : { type: Boolean, default: true },
   },
   { timestamps: true }

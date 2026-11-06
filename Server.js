@@ -40,6 +40,7 @@ import  DigitalMenuItemRouter from "./src/Routers/DigitalMenu.route.js";
 import PackageRouter from "./src/Routers/Package.route.js";
 import BudgetRouter from "./src/Routers/Budget.route.js";
 import AlcoholPurchaseLineRouter from "./src/Routers/AlcoholPurchaseLine.route.js";
+import AlcoholStockRouter from "./src/Routers/AlcoholStock.route.js";
 
 const app  = express();
 const PORT = process.env.PORT || 7000; 
@@ -153,6 +154,7 @@ app.use("/api/v1/daily-bookings", DailyBookingRouter);
 app.use("/api/v1/digital-menu-items",  DigitalMenuItemRouter);
 app.use("/api/v1/budgets", BudgetRouter);
 app.use("/api/v1/alcohol-purchase-lines", AlcoholPurchaseLineRouter);
+app.use("/api/v1/alcohol-stock/", AlcoholStockRouter);
 
 app.use('/uploads', express.static('uploads'));
 
