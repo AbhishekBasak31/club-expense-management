@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { AlcoholStockMovement } from "../Model/AlcoholStockMovement.model.js";
 import { AlcoholStockConfig } from "../Model/AlcoholStockConfig.model.js";
+import { AlcoholBarDay } from "../Model/AlcoholBarDay.model.js";
 import { AlcoholPurchaseRequirement } from "../Model/AlcoholpurchaseReq.modal.js";
 import { ExpenseEntry } from "../Model/Expense.modal.js";
 import { Product } from "../Model/product.model.js";
@@ -34,7 +35,14 @@ const monthKeyOf = (d) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).p
 const toBottlesText = (ml, unitMl) => { const s = splitMl(ml, unitMl); return `${s.bottles} btl${s.looseMl ? ` + ${s.looseMl} ml` : ""}`; };
 
 // ── shared loading ───────────────────────────────────────────────────────────
-async function loadContext() {
+// A REAL calendar date: "2026-02-30" would quietly become 2 March and "2026-13-45" is no date at all.
+export const isRealDate = (s) => {
+  if (!DATE_RE.test(String(s))) return false;
+  const d = new Date(`${s}T00:00:00.000Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
+
+export async function loadContext() {
   const [products, uoms, conversions, config] = await Promise.all([
     Product.find({ isActive: true }).lean(),
     UOM.find({}).lean(),
@@ -54,7 +62,20 @@ async function loadContext() {
       return { product: p, unitMl: u.ok ? u.ml : null, reason: u.ok ? "" : u.reason };
     });
   const byId = new Map(items.map((i) => [String(i.product._id), i]));
-  return { items, byId, startDate: config?.trackingStartDate ? new Date(config.trackingStartDate) : null };
+  return { items, byId, uoms, startDate: config?.trackingStartDate ? new Date(config.trackingStartDate) : null };
+}
+
+// The bar can only be changed AFTER its latest closed day — a closed day's opening, issues and count are final.
+export async function lastClosedDayKey() {
+  const closed = await AlcoholBarDay.find({ status: "closed" }).sort({ date: -1 }).lean();
+  return closed.length ? new Date(closed[0].date).toISOString().slice(0, 10) : null;
+}
+
+// ISS-20261106-01, -02 … one number per issue note, counted per day
+export async function nextNoteNo(dateStr) {
+  const rows = await AlcoholStockMovement.find({ type: "transfer-out", date: dayStart(dateStr) }).lean();
+  const notes = new Set(rows.map((m) => m.noteId).filter(Boolean));
+  return `ISS-${dateStr.replace(/-/g, "")}-${String(notes.size + 1).padStart(2, "0")}`;
 }
 
 // Purchase lines of alcohol since the tracking start: matched by product NAME, plus anything categorised Alcohol
@@ -151,6 +172,7 @@ function buildRows(ctx, month, movements, pending, openRequests) {
     const pid = String(p._id);
     const ready = unitMl != null;
     const s = ready ? summariseStore(movByProduct.get(pid) || [], start, end) : { openingMl: 0, receivedMl: 0, toBarMl: 0, adjustmentMl: 0, balanceMl: 0 };
+    const barBalanceMl = round3((movByProduct.get(pid) || []).filter((m) => m.location === "bar").reduce((t, m) => t + (Number(m.qtyMl) || 0), 0));
     const aw = awaiting.get(pid) || { ml: 0, bottles: 0, lines: 0 };
     const rq = requested.get(pid) || { bottles: 0, ids: [] };
     const min = Number(p.reorderLevel) || 0, max = Number(p.maxStockLevel) || 0;
@@ -160,6 +182,7 @@ function buildRows(ctx, month, movements, pending, openRequests) {
       alcoholType: p.baseCategoryName || "", uomName: p.uomName || "",
       unitMl, ready, reason,
       ...s,
+      barBalanceMl: ready ? barBalanceMl : 0, totalMl: ready ? round3(s.balanceMl + barBalanceMl) : 0,
       awaitingMl: round3(aw.ml), awaitingBottles: aw.bottles, awaitingLines: aw.lines,
       min, max, barPar: Number(p.barParLevel) || 0, leadTimeDays: Number(p.leadTimeDays) || 0,
       status: ready ? levelStatus({ balanceMl: s.balanceMl, unitMl, min, max }) : "not-ready",
@@ -280,19 +303,17 @@ export const receiveStock = async (req, res) => {
 };
 
 // POST /alcohol-stock/opening { date, items:[{ productId, bottles, looseMl }] }
-// Sets the tracking start date (the first time) and records each product's counted stock. A product that already has
+// Sets the tracking start date (the first time) and records each product's counted stock, dated `date`. Any date is
+// allowed — also back dates, and also after tracking has started (for products added later). A product that already has
 // ledger rows is refused — correct it with an adjustment instead. Zero counts are skipped (no row needed).
 export const setOpeningStock = async (req, res) => {
   const { date, items } = req.body || {};
-  if (!date || !DATE_RE.test(date)) return sendError(res, "A valid opening date (YYYY-MM-DD) is required.");
+  if (!isRealDate(date)) return sendError(res, "A valid opening date (YYYY-MM-DD) is required.");
   if (items !== undefined && !Array.isArray(items)) return sendError(res, "items must be a list.");
   const list = items || [];
   if (list.length > 500) return sendError(res, "At most 500 products at a time.");
   const ctx = await loadContext();
   const when = dayStart(date);
-  if (ctx.startDate && ctx.startDate.getTime() !== when.getTime()) {
-    return sendError(res, `Tracking started on ${iso(ctx.startDate).slice(0, 10)} — opening stock must be dated that day. Use an adjustment for later corrections.`, 409);
-  }
   const existing = await AlcoholStockMovement.find({}).lean();
   const hasRows = new Set(existing.map((m) => String(m.productId)));
 
@@ -320,8 +341,9 @@ export const setOpeningStock = async (req, res) => {
     else await AlcoholStockConfig.create({ key: "main", trackingStartDate: when, updatedBy: uid(req) });
   }
   const count = (a) => results.filter((x) => x.action === a).length;
-  return sendSuccess(res, { trackingStartDate: when.toISOString(), results, summary: { saved: count("saved"), skipped: count("skipped"), errors: count("error") } },
-    `Tracking starts ${date}. ${count("saved")} opening balance${count("saved") === 1 ? "" : "s"} saved.`, 201);
+  const started = ctx.startDate ? ctx.startDate : when;           // tracking that already started keeps its start date
+  return sendSuccess(res, { trackingStartDate: started.toISOString(), results, summary: { saved: count("saved"), skipped: count("skipped"), errors: count("error") } },
+    `${ctx.startDate ? "" : `Tracking starts ${date}. `}${count("saved")} opening balance${count("saved") === 1 ? "" : "s"} saved${ctx.startDate ? ` (dated ${date})` : ""}.`, 201);
 };
 
 // PUT /alcohol-stock/levels { productId, min?, max?, barPar?, leadTimeDays? }  — all in bottles (lead time in days)
@@ -345,7 +367,7 @@ export const updateLevels = async (req, res) => {
 
 // What the store can give up on `date`: its balance at the end of that day, but never more than keeps EVERY later day's
 // balance at or above zero (a back-dated issue must not overdraw a day that has already happened).
-async function storeOutflowLimit(productId, date) {
+export async function storeOutflowLimit(productId, date) {
   const rows = (await AlcoholStockMovement.find({ productId, location: "store" }).lean())
     .map((m) => ({ t: new Date(m.date).getTime(), q: Number(m.qtyMl) || 0 }))
     .sort((x, y) => x.t - y.t);
@@ -366,14 +388,13 @@ async function storeOutflowLimit(productId, date) {
 async function readQuantity(body) {
   const { productId, date, bottles, looseMl } = body || {};
   if (!productId) return { error: "productId is required." };
-  if (!date || !DATE_RE.test(date)) return { error: "A valid date (YYYY-MM-DD) is required." };
+  if (!isRealDate(date)) return { error: "A valid date (YYYY-MM-DD) is required." };
   const ctx = await loadContext();
   if (!ctx.startDate) return { error: "Start tracking first — set the opening stock." };
   const item = ctx.byId.get(String(productId));
   if (!item) return { error: "Alcohol product not found." };
   if (item.unitMl == null) return { error: `${item.product.name} has no bottle unit yet.` };
   const when = dayStart(date);
-  if (when.getTime() < ctx.startDate.getTime()) return { error: `Dates before tracking started (${iso(ctx.startDate).slice(0, 10)}) are not allowed.` };
   const b = Number(bottles || 0), l = Number(looseMl || 0);
   if (!Number.isFinite(b) || !Number.isFinite(l) || b < 0 || l < 0) return { error: "Bottles and loose ml must be 0 or more." };
   const ml = toMl({ bottles: b, looseMl: l }, item.unitMl);
@@ -386,6 +407,8 @@ export const allocateToBar = async (req, res) => {
   const q = await readQuantity(req.body);
   if (q.error) return sendError(res, q.error);
   const { item, when, ml } = q;
+  const lastClosed = await lastClosedDayKey();
+  if (lastClosed && req.body.date <= lastClosed) return sendError(res, `The bar day ${lastClosed} is already closed — allocate on a later date.`, 409);
   const { asOf: balance, available } = await storeOutflowLimit(item.product._id, when);
   if (ml > available + EPS) {
     return sendError(res, available + EPS >= balance
@@ -393,10 +416,11 @@ export const allocateToBar = async (req, res) => {
       : `Only ${toBottlesText(Math.max(available, 0), item.unitMl)} can be taken out on that date — a later day's stock would go below zero.`, 409);
   }
   const transferId = new mongoose.Types.ObjectId().toString();
-  const base = { productId: item.product._id, productName: item.product.name, date: when, refType: "transfer", refId: transferId, transferId, remark: String(req.body.remark || "").trim(), createdBy: uid(req) };
+  const noteId = await nextNoteNo(req.body.date);
+  const base = { productId: item.product._id, productName: item.product.name, date: when, refType: "transfer", refId: transferId, transferId, noteId, remark: String(req.body.remark || "").trim(), createdBy: uid(req) };
   await AlcoholStockMovement.create({ ...base, location: "store", type: "transfer-out", qtyMl: -ml });
   await AlcoholStockMovement.create({ ...base, location: "bar", type: "transfer-in", qtyMl: ml });
-  return sendSuccess(res, { transferId, ml, storeBalanceMl: round3(balance - ml) }, `Allocated ${toBottlesText(ml, item.unitMl)} to the bar.`, 201);
+  return sendSuccess(res, { transferId, noteNo: noteId, ml, storeBalanceMl: round3(balance - ml) }, `Allocated ${toBottlesText(ml, item.unitMl)} to the bar.`, 201);
 };
 
 // POST /alcohol-stock/adjust { productId, date, direction:'add'|'remove', bottles?, looseMl?, reason }
@@ -423,8 +447,8 @@ export const adjustStock = async (req, res) => {
 // GET /alcohol-stock/movements?productId&from&to&location&type&limit
 export const getMovements = async (req, res) => {
   const { productId, from, to, location, type } = req.query;
-  if (from && !DATE_RE.test(from)) return sendError(res, "'from' must be a date as YYYY-MM-DD.");
-  if (to && !DATE_RE.test(to)) return sendError(res, "'to' must be a date as YYYY-MM-DD.");
+  if (from && !isRealDate(from)) return sendError(res, "'from' must be a date as YYYY-MM-DD.");
+  if (to && !isRealDate(to)) return sendError(res, "'to' must be a date as YYYY-MM-DD.");
   const limit = Math.min(Math.max(Number(req.query.limit) || 2000, 1), 10000);
   const filter = {};
   if (productId) filter.productId = productId;

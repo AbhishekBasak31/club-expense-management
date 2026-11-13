@@ -161,8 +161,22 @@ const ExpenseEntrySchema = new mongoose.Schema(
     subTotal        : { type: Number, default: 0 },
     totalGST        : { type: Number, default: 0 },
     deliveryCharge  : { type: Number, default: 0 }, // flat amount, no GST — added straight to grandTotal
-    roundOff        : { type: Number, default: 0 }, // +/- adjustment applied last, after delivery charge
-    grandTotal      : { type: Number, default: 0 }, // subTotal + totalGST + deliveryCharge + roundOff
+    roundOff        : { type: Number, default: 0 }, // +/- adjustment applied last, after delivery charge (and, on alcohol bills, after TCS)
+    grandTotal      : { type: Number, default: 0 }, // subTotal + totalGST + deliveryCharge + roundOff   (alcohol bills: see the four fields below)
+
+    // ── Alcohol bills only ────────────────────────────────────────────────────────────────────────────────────
+    // Entry-level amounts that exist ONLY on a purchase that contains an Alcohol item (sub-category "Alcohol");
+    // on any other entry the controller forces them to 0. Order of the calculation (all server-side):
+    //     base      = subTotal + totalGST + deliveryCharge
+    //     beforeTcs = base − lessRebate + specialPurposeFee + govtRoundOff
+    //     tcsAmount = tcsType === "percent" ? beforeTcs × tcsValue ÷ 100 : tcsValue
+    //     grandTotal = beforeTcs + tcsAmount + roundOff            (roundOff = the final round to the nearest rupee)
+    lessRebate        : { type: Number, default: 0 },   // deducted from the bill total
+    specialPurposeFee : { type: Number, default: 0 },   // added to the bill total
+    govtRoundOff      : { type: Number, default: 0 },   // round-off value to be remitted to the government — added to the bill total
+    tcsType           : { type: String, enum: ["percent", "amount"], default: "percent" },
+    tcsValue          : { type: Number, default: 0 },   // the % or the rupee amount, as typed
+    tcsAmount         : { type: Number, default: 0 },   // server-calculated rupee value of the TCS
 
     notes           : { type: String, default: "" },
     createdBy       : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

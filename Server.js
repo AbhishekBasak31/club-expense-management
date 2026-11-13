@@ -41,6 +41,9 @@ import PackageRouter from "./src/Routers/Package.route.js";
 import BudgetRouter from "./src/Routers/Budget.route.js";
 import AlcoholPurchaseLineRouter from "./src/Routers/AlcoholPurchaseLine.route.js";
 import AlcoholStockRouter from "./src/Routers/AlcoholStock.route.js";
+import AlcoholBarRouter from "./src/Routers/AlcoholBar.routes.js";
+import AlcoholSalesRouter from "./src/Routers/AlcoholSales.route.js";
+
 
 const app  = express();
 const PORT = process.env.PORT || 7000; 
@@ -155,6 +158,9 @@ app.use("/api/v1/digital-menu-items",  DigitalMenuItemRouter);
 app.use("/api/v1/budgets", BudgetRouter);
 app.use("/api/v1/alcohol-purchase-lines", AlcoholPurchaseLineRouter);
 app.use("/api/v1/alcohol-stock/", AlcoholStockRouter);
+app.use("/api/v1/alcohol-bar/", AlcoholBarRouter);
+app.use("/api/v1/alcohol-sales", AlcoholSalesRouter);
+
 
 app.use('/uploads', express.static('uploads'));
 

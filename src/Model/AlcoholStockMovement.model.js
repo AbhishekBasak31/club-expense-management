@@ -27,6 +27,7 @@ const AlcoholStockMovementSchema = new mongoose.Schema(
     refType     : { type: String, default: "manual" },                 // 'purchase-line' | 'transfer' | 'manual' | …
     refId       : { type: String, default: "" },                       // purchase line: "<entryId>:<itemId>"
     transferId  : { type: String, default: "" },
+    noteId      : { type: String, default: "" },                       // the issue note a transfer belongs to (ISS-20261106-01)
     remark      : { type: String, default: "" },
     createdBy   : { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
@@ -36,6 +37,7 @@ const AlcoholStockMovementSchema = new mongoose.Schema(
 AlcoholStockMovementSchema.index({ productId: 1, date: 1 });
 AlcoholStockMovementSchema.index({ location: 1, date: 1 });
 AlcoholStockMovementSchema.index({ transferId: 1 });
+AlcoholStockMovementSchema.index({ refType: 1, refId: 1 });   // finds a day's closing rows
 // A purchase line can be received into stock only once.
 AlcoholStockMovementSchema.index(
   { refType: 1, refId: 1, type: 1, location: 1 },

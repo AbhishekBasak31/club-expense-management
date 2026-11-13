@@ -4,9 +4,41 @@ import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
 
 
 // ─────────────────────────────────────────────────────────────────
-// HELPER — recalculate all amounts server-side (never trust client)
+// ALCOHOL BILLS — four extra entry-level amounts (less rebate, special purpose fee, round off to govt, TCS),
+// applied ONLY to a purchase that contains an item whose sub-category is "Alcohol". Any other entry ignores them.
 // ─────────────────────────────────────────────────────────────────
-const calculateItems = (items = [], deliveryCharge = 0, roundOff = 0) => {
+const round2n = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const isAlcoholItem = (item) => String(item?.subCategoryName || "").trim().toLowerCase() === "alcohol";
+const isAlcoholEntry = (items = []) => items.some(isAlcoholItem);
+const NO_ALCOHOL = { lessRebate: 0, specialPurposeFee: 0, govtRoundOff: 0, tcsType: "percent", tcsValue: 0, tcsAmount: 0 };
+
+// "" when fine, else the message to show. `x` holds the raw values (request body or saved entry).
+const validateAlcoholExtras = (x) => {
+  for (const [k, label] of [["lessRebate", "Less rebate"], ["specialPurposeFee", "Special purpose fee"], ["govtRoundOff", "Round off (to govt)"], ["tcsValue", "TCS"]]) {
+    const v = x[k];
+    if (v === undefined || v === null || v === "") continue;
+    if (!Number.isFinite(Number(v)) || Number(v) < 0) return `${label} must be 0 or more.`;
+  }
+  if (x.tcsType !== undefined && x.tcsType !== null && !["percent", "amount"].includes(x.tcsType)) return "TCS type must be percent or amount.";
+  if ((x.tcsType ?? "percent") === "percent" && Number(x.tcsValue) > 100) return "TCS percent cannot be more than 100.";
+  return "";
+};
+
+// ─────────────────────────────────────────────────────────────────
+// HELPER — recalculate all amounts server-side (never trust client)
+//
+// `alcohol` is null for an ordinary entry (nothing changes), or the four raw extras for an alcohol bill:
+//     base       = subTotal + totalGST + deliveryCharge
+//     beforeTcs  = base − lessRebate + specialPurposeFee + govtRoundOff
+//     tcsAmount  = percent ? beforeTcs × tcsValue ÷ 100 : tcsValue          (TCS is charged on everything above)
+//     beforeRound = beforeTcs + tcsAmount
+//     roundOff   = the nearest-rupee adjustment of beforeRound — worked out here when `roundOff` is null,
+//                  or the value the user typed over the automatic one when it is a number
+//     grandTotal = beforeRound + roundOff          → always a whole rupee when the round off is automatic
+// All alcohol amounts are held to 2 decimals so the page's preview and this total agree to the paisa.
+// Returns `error` (a message) when the figures cannot work, e.g. a rebate larger than the bill.
+// ─────────────────────────────────────────────────────────────────
+const calculateItems = (items = [], deliveryCharge = 0, roundOff = 0, alcohol = null) => {
   const calculated = items.map((item) => {
     // ── Employee salary items compute their net salary from the
     // salaryDetails sub-fields, then that net salary becomes the item's
@@ -46,10 +78,29 @@ const calculateItems = (items = [], deliveryCharge = 0, roundOff = 0) => {
   const subTotal       = calculated.reduce((s, i) => s + i.amount, 0);
   const totalGST        = calculated.reduce((s, i) => s + i.gstAmount, 0);
   const deliveryChargeN = Number(deliveryCharge) || 0; // flat amount, no GST applied
-  const roundOffN       = Number(roundOff) || 0;       // +/- adjustment, applied last
-  const grandTotal      = subTotal + totalGST + deliveryChargeN + roundOffN;
 
-  return { calculated, subTotal, totalGST, deliveryCharge: deliveryChargeN, roundOff: roundOffN, grandTotal };
+  if (!alcohol) {
+    const roundOffN = Number(roundOff) || 0;           // +/- adjustment, applied last
+    const grandTotal = subTotal + totalGST + deliveryChargeN + roundOffN;
+    return { calculated, subTotal, totalGST, deliveryCharge: deliveryChargeN, roundOff: roundOffN, grandTotal, ...NO_ALCOHOL };
+  }
+
+  // The bill amount is the sum of each item's net amount (+ delivery) — added the same way the page adds its rows, so the two
+  // agree to the paisa even on a bill that lands exactly on a half-paisa.
+  const base = round2n(calculated.reduce((t, i) => t + i.netAmount, 0) + deliveryChargeN);
+  const lessRebate = round2n(alcohol.lessRebate);
+  const specialPurposeFee = round2n(alcohol.specialPurposeFee);
+  const govtRoundOff = round2n(alcohol.govtRoundOff);
+  if (lessRebate > base) return { error: `Less rebate (₹${lessRebate}) cannot be more than the bill amount (₹${base}).` };
+  const beforeTcs = round2n(base - lessRebate + specialPurposeFee + govtRoundOff);
+  const tcsType = alcohol.tcsType === "amount" ? "amount" : "percent";
+  const tcsValue = round2n(alcohol.tcsValue);
+  const tcsAmount = tcsType === "percent" ? round2n((beforeTcs * tcsValue) / 100) : tcsValue;
+  const beforeRound = round2n(beforeTcs + tcsAmount);
+  const roundOffN = roundOff === null ? round2n(Math.round(beforeRound) - beforeRound) : round2n(roundOff);     // null = automatic
+  const grandTotal = round2n(beforeRound + roundOffN);
+
+  return { calculated, subTotal, totalGST, deliveryCharge: deliveryChargeN, roundOff: roundOffN, grandTotal, lessRebate, specialPurposeFee, govtRoundOff, tcsType, tcsValue, tcsAmount };
 };
 
 // Generate next reference number: EXP-00001, EXP-00002...
@@ -89,7 +140,7 @@ const syncProductCurrentPrice = async (items = []) => {
 // CREATE
 // ─────────────────────────────────────────────────────────────────
 export const createExpense = async (req, res) => {
-  const { date, incurredDate, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
+  const { date, incurredDate, items, notes, status, deliveryCharge, roundOff, roundOffManual, addedBy } = req.body;
   const entryStatus = status === "draft" ? "draft" : "final";
 
   if (!date) return sendError(res, "Date is required.");
@@ -125,8 +176,13 @@ export const createExpense = async (req, res) => {
     }
   }
 
-  const { calculated, subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal } =
-    calculateItems(items, deliveryCharge, roundOff);
+  // Alcohol bill → the four extra amounts apply (and the final total is rounded to the nearest rupee unless the user typed
+  // their own round off — the page says so with roundOffManual). Any other entry ignores them completely.
+  const alcohol = isAlcoholEntry(items) ? req.body : null;
+  if (alcohol) { const bad = validateAlcoholExtras(alcohol); if (bad) return sendError(res, bad); }
+  const calc = calculateItems(items, deliveryCharge, alcohol && !roundOffManual ? null : roundOff, alcohol);
+  if (calc.error) return sendError(res, calc.error);
+  const { calculated, subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal } = calc;
     
   // ... rest of the existing create logic
 
@@ -139,6 +195,8 @@ export const createExpense = async (req, res) => {
     referenceNumber: await nextReference(),
     items: calculated,
     subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal,
+    lessRebate: calc.lessRebate, specialPurposeFee: calc.specialPurposeFee, govtRoundOff: calc.govtRoundOff,
+    tcsType: calc.tcsType, tcsValue: calc.tcsValue, tcsAmount: calc.tcsAmount,
     notes: notes || "",
     addedBy: addedBy || "",
     createdBy: req.user.userId,
@@ -235,7 +293,7 @@ export const getExpenseById = async (req, res) => {
 // UPDATE — recalculates totals
 // ─────────────────────────────────────────────────────────────────
 export const updateExpense = async (req, res) => {
-  const { date, incurredDate, items, notes, status, deliveryCharge, roundOff, addedBy } = req.body;
+  const { date, incurredDate, items, notes, status, deliveryCharge, roundOff, roundOffManual, addedBy } = req.body;
 
   const entry = await ExpenseEntry.findById(req.params.id);
   if (!entry) return sendError(res, "Expense entry not found.", 404);
@@ -243,6 +301,29 @@ export const updateExpense = async (req, res) => {
   const resultingStatus = status === "draft" || status === "final" ? status : entry.status;
   const nextDeliveryCharge = deliveryCharge !== undefined ? deliveryCharge : entry.deliveryCharge;
   const nextRoundOff       = roundOff !== undefined ? roundOff : entry.roundOff;
+
+  // Alcohol bill: the four amounts come from this request, else from what is already saved on the entry.
+  const ALCOHOL_KEYS = ["lessRebate", "specialPurposeFee", "govtRoundOff", "tcsType", "tcsValue"];
+  const alcoholFor = (list) => {
+    if (!isAlcoholEntry(list)) return null;
+    const x = {};
+    ALCOHOL_KEYS.forEach((k) => { x[k] = req.body[k] !== undefined ? req.body[k] : entry[k]; });
+    return x;
+  };
+  // An alcohol bill's round off is worked out afresh (nearest rupee) unless the user typed their own (roundOffManual).
+  const roundOffFor = (list) => (isAlcoholEntry(list) && !(roundOffManual && roundOff !== undefined) ? null : nextRoundOff);
+  const applyTotals = (calc) => {
+    entry.deliveryCharge = calc.deliveryCharge;
+    entry.roundOff = calc.roundOff;
+    entry.grandTotal = calc.grandTotal;
+    entry.lessRebate = calc.lessRebate; entry.specialPurposeFee = calc.specialPurposeFee; entry.govtRoundOff = calc.govtRoundOff;
+    entry.tcsType = calc.tcsType; entry.tcsValue = calc.tcsValue; entry.tcsAmount = calc.tcsAmount;
+  };
+  {
+    const probe = alcoholFor(items || entry.items);
+    const bad = probe && validateAlcoholExtras(probe);
+    if (bad) return sendError(res, bad);
+  }
 
   if (items) {
     if (resultingStatus === "final") {
@@ -254,22 +335,18 @@ export const updateExpense = async (req, res) => {
       return sendError(res, "At least one item needs a description.");
     }
 
-    const { calculated, subTotal, totalGST, deliveryCharge: dc, roundOff: ro, grandTotal } =
-      calculateItems(items, nextDeliveryCharge, nextRoundOff);
-    entry.items = calculated;
-    entry.subTotal = subTotal;
-    entry.totalGST = totalGST;
-    entry.deliveryCharge = dc;
-    entry.roundOff = ro;
-    entry.grandTotal = grandTotal;
-  } else if (deliveryCharge !== undefined || roundOff !== undefined) {
-    // Delivery charge / round off changed without touching items — still
+    const calc = calculateItems(items, nextDeliveryCharge, roundOffFor(items), alcoholFor(items));
+    if (calc.error) return sendError(res, calc.error);
+    entry.items = calc.calculated;
+    entry.subTotal = calc.subTotal;
+    entry.totalGST = calc.totalGST;
+    applyTotals(calc);
+  } else if (deliveryCharge !== undefined || roundOff !== undefined || ALCOHOL_KEYS.some((k) => req.body[k] !== undefined)) {
+    // Delivery charge / round off (or an alcohol amount) changed without touching items — still
     // needs to recalculate grandTotal from the existing item totals.
-    const { deliveryCharge: dc, roundOff: ro, grandTotal } =
-      calculateItems(entry.items, nextDeliveryCharge, nextRoundOff);
-    entry.deliveryCharge = dc;
-    entry.roundOff = ro;
-    entry.grandTotal = grandTotal;
+    const calc = calculateItems(entry.items, nextDeliveryCharge, roundOffFor(entry.items), alcoholFor(entry.items));
+    if (calc.error) return sendError(res, calc.error);
+    applyTotals(calc);
   }
   if (date) entry.date = date;
   if (incurredDate !== undefined) entry.incurredDate = incurredDate || date || entry.date;
@@ -521,6 +598,11 @@ export const getExpenseRegister = async (req, res) => {
         // any entry with more than one item.
         deliveryCharge:   1,
         roundOff:         1,
+        // Alcohol bills only (0 on every other entry) — also entry-level, add once per entryId
+        lessRebate:       1,
+        specialPurposeFee: 1,
+        govtRoundOff:     1,
+        tcsAmount:        1,
         expenseType:      "$items.expenseType",
         groupHeadName:    "$items.groupHeadName",
         groupName:        "$items.groupName",
@@ -658,6 +740,18 @@ export const getPurchaseLedger = async (req, res) => {
             credit: round2(entry.deliveryCharge),
           });
         }
+        // Alcohol bill charges — each its own line so the running balance still ends at the entry's grand total.
+        // A rebate reduces what is owed (Debit); the fee, the govt round off and TCS add to it (Credit).
+        const journal = (label, debit, credit) => rows.push({
+          entryId: entry._id, itemId: null, date: entry.date, incurredDate: entry.incurredDate, referenceNumber: entry.referenceNumber,
+          billNo: item.billNo || "", vendorId: item.vendorId || null, vendorName: item.vendorName || "",
+          groupHeadName: item.groupHeadName || "", groupName: item.groupName || "",
+          categoryName: label, subCategoryName: "", baseCategoryName: "", description: label, vchType: "Journal", debit, credit,
+        });
+        if (entry.lessRebate)        journal("Less Rebate", round2(entry.lessRebate), 0);
+        if (entry.specialPurposeFee) journal("Special Purpose Fee", 0, round2(entry.specialPurposeFee));
+        if (entry.govtRoundOff)      journal("Round Off (To Govt)", 0, round2(entry.govtRoundOff));
+        if (entry.tcsAmount)         journal("TCS", 0, round2(entry.tcsAmount));
         if (entry.roundOff) {
           const ro = Number(entry.roundOff) || 0;
           rows.push({
