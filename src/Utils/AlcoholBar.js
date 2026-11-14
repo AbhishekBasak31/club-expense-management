@@ -91,3 +91,119 @@ export function validateOutflow({ type, bottles, looseMl }) {
   if (!Number.isFinite(b) || !Number.isFinite(l) || b < 0 || l < 0) return "Bottles and loose ml must be 0 or more.";
   return null;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSUMPTION GRID — the bar's consumption laid out against time, one row per alcohol.
+//   view "day"   : columns are the HOURS the day sold in; each hour lists what was sold (purchase type · price · qty · total)
+//   view "month" : columns are the DAYS of the range;     each holds Opening · Sold ml · Closing · Consumption
+//   view "year"  : columns are the MONTHS of the range;   same four figures
+// Sold comes from the day's bill lines (so an open day shows too); everything else from the bar's ledger rows. Opening of
+// a column is the closing of the one before it, so the columns chain, and the first opening is the ledger balance before the range.
+//   closing = opening + received + other bar movement + count variance − sold − (breakage + complimentary + party)
+//   consumption = sold + breakage + complimentary + party
+// ─────────────────────────────────────────────────────────────────────────────
+export const GRID_VIEWS = ["day", "month", "year"];
+export const MAX_GRID_DAYS = 93;
+export const MAX_GRID_MONTHS = 36;
+const DAY_MS = 24 * 3600 * 1000;
+const monthKeyOf = (key) => key.slice(0, 7);
+
+export function gridBuckets(view, from, to) {
+  const out = [];
+  if (view === "month") {
+    for (let t = dayStartOf(from).getTime(); t <= dayStartOf(to).getTime(); t += DAY_MS) out.push({ key: dayKey(new Date(t)), label: String(Number(dayKey(new Date(t)).slice(8))) });
+  } else if (view === "year") {
+    const [fy, fm] = from.split("-").map(Number), [ty, tm] = to.split("-").map(Number);
+    for (let y = fy, m = fm; y < ty || (y === ty && m <= tm); m === 12 ? (y++, (m = 1)) : m++) {
+      const key = `${y}-${String(m).padStart(2, "0")}`;
+      out.push({ key, label: key });
+    }
+  }
+  return out;
+}
+
+export function buildConsumptionGrid({ view, from, to, products, barMovements, lines }) {
+  const start = dayStartOf(from), end = new Date(dayStartOf(to).getTime() + DAY_MS);
+  const bucketOf = (iso) => (view === "year" ? iso.slice(0, 7) : iso.slice(0, 10));
+  const buckets = view === "day" ? [{ key: from, label: from }] : gridBuckets(view, from, to);
+  const moves = new Map(), sales = new Map();
+  for (const m of barMovements) { const k = String(m.productId); if (!moves.has(k)) moves.set(k, []); moves.get(k).push(m); }
+  for (const l of lines) { const k = String(l.productKey ?? l.productId); if (!sales.has(k)) sales.set(k, []); sales.get(k).push(l); }
+
+  // the hours a single day sold in (a bill with no time goes to the last column)
+  const hourSet = new Set();
+  if (view === "day") for (const l of lines) hourSet.add(l.hour === null || l.hour === undefined ? "na" : String(l.hour).padStart(2, "0"));
+  const columns = view === "day"
+    ? [...hourSet].sort((a, b) => (a === "na" ? 1 : b === "na" ? -1 : a.localeCompare(b))).map((h) => ({ key: h, label: h === "na" ? "No time" : `${h}:00` }))
+    : buckets;
+
+  const rows = [];
+  for (const p of products) {
+    const id = String(p.productId);
+    let opening = 0;
+    const per = new Map(buckets.map((b) => [b.key, { received: 0, adj: 0, count: 0, other: 0, sold: 0 }]));
+    for (const m of moves.get(id) || []) {
+      const t = new Date(m.date).getTime(), q = Number(m.qtyMl) || 0;
+      if (t < start.getTime()) { opening += q; continue; }
+      if (t >= end.getTime()) continue;
+      const b = per.get(view === "day" ? from : bucketOf(new Date(m.date).toISOString()));
+      if (!b) continue;
+      if (m.type === "transfer-in") b.received += q;
+      else if (m.type === "sale") continue;                       // sold comes from the bill lines
+      else if (m.type === "bar-count") b.count += q;
+      else if (m.type === "breakage" || m.type === "complimentary" || m.type === "party") b.other += -q;
+      else b.adj += q;
+    }
+    const mine = sales.get(id) || [];
+    for (const l of mine) { const b = per.get(view === "day" ? from : view === "year" ? String(l.day).slice(0, 7) : String(l.day)); if (b) b.sold += Number(l.ml) || 0; }
+
+    let o = round3(opening), anyActivity = Math.abs(o) > EPS || mine.length > 0;
+    const cells = {}; let first = null, last = 0, soldAll = 0, consAll = 0;
+    for (const b of buckets) {
+      const x = per.get(b.key);
+      const sold = round3(x.sold), other = round3(x.other);
+      const closing = round3(o + x.received + x.adj + x.count - sold - other);
+      if ([x.received, x.adj, x.count, other, sold].some((v) => Math.abs(v) > EPS)) anyActivity = true;
+      cells[b.key] = { openingMl: o, soldMl: sold, closingMl: closing, consumptionMl: round3(sold + other) };
+      if (first === null) first = o;
+      last = closing; soldAll += sold; consAll += sold + other; o = closing;
+    }
+    if (!anyActivity) continue;
+
+    const row = { productId: id, productName: p.productName, alcoholType: p.alcoholType || "", unitMl: p.unitMl, openingMl: first ?? 0, closingMl: last, soldMl: round3(soldAll), consumptionMl: round3(consAll) };
+    if (view === "day") {
+      const byHour = {};
+      for (const l of mine) {
+        const h = l.hour === null || l.hour === undefined ? "na" : String(l.hour).padStart(2, "0");
+        const qty = Number(l.qty) || 0, price = qty > 0 ? round2((Number(l.amount) + Number(l.discAmt || 0)) / qty) : 0;
+        const list = (byHour[h] = byHour[h] || []);
+        const hit = list.find((e) => e.uom === (l.uomName || "") && e.price === price);
+        if (hit) { hit.qty = round3(hit.qty + qty); hit.total = round2(hit.total + (Number(l.amount) || 0)); }
+        else list.push({ uom: l.uomName || "", price, qty: round3(qty), total: round2(Number(l.amount) || 0) });
+      }
+      for (const h of Object.keys(byHour)) byHour[h].sort((a, b) => a.uom.localeCompare(b.uom) || a.price - b.price);
+      row.hours = byHour;
+    } else row.cells = cells;
+    rows.push(row);
+  }
+  rows.sort((a, b) => a.productName.localeCompare(b.productName));
+
+  const sum = (f) => round3(rows.reduce((t, r) => t + f(r), 0));
+  const totals = { openingMl: sum((r) => r.openingMl), soldMl: sum((r) => r.soldMl), closingMl: sum((r) => r.closingMl), consumptionMl: sum((r) => r.consumptionMl) };
+  if (view === "day") {
+    totals.hours = {};
+    for (const c of columns) {
+      const e = rows.flatMap((r) => r.hours?.[c.key] || []);
+      totals.hours[c.key] = { qty: round3(e.reduce((t, x) => t + x.qty, 0)), total: round2(e.reduce((t, x) => t + x.total, 0)) };
+    }
+    totals.amount = round2(Object.values(totals.hours).reduce((t, x) => t + x.total, 0));
+  } else {
+    totals.cells = {};
+    for (const c of columns) {
+      const t = { openingMl: 0, soldMl: 0, closingMl: 0, consumptionMl: 0 };
+      for (const r of rows) { const x = r.cells[c.key]; t.openingMl += x.openingMl; t.soldMl += x.soldMl; t.closingMl += x.closingMl; t.consumptionMl += x.consumptionMl; }
+      totals.cells[c.key] = { openingMl: round3(t.openingMl), soldMl: round3(t.soldMl), closingMl: round3(t.closingMl), consumptionMl: round3(t.consumptionMl) };
+    }
+  }
+  return { columns, rows, totals };
+}

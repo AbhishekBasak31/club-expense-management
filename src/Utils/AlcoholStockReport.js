@@ -9,7 +9,10 @@
 import { round3, EPS } from "./AlcoholStock.js";
 import { round2 } from "./AlcoholBar.js";
 
-export const REPORT_NAMES = ["valuation", "movements", "receiving", "slow", "monthly"];
+export const REPORT_NAMES = ["valuation", "movements", "receiving", "slow", "monthly", "consumption", "movement"];
+export const STATEMENT_GROUPS = ["product", "day", "month"];   // consumption / movement: one row per alcohol, per day, or per month
+export const MAX_STATEMENT_DAYS = 93;                          // "by day" needs a range this short
+export const MAX_STATEMENT_MONTHS = 36;
 export const CONSUMPTION_TYPES = ["sale", "breakage", "complimentary", "party"];   // what leaves the bar for good
 export const OUT_TYPES = ["transfer-out", ...CONSUMPTION_TYPES];                   // anything that "moves" stock on
 export const DEFAULT_COVER_DAYS = 90;                                              // more than this many days of cover = slow
@@ -154,5 +157,83 @@ export function monthlyRows({ movements, months, valueOfReceipt, costPerMlOf, in
       adjustmentMl: round3(x.adjustmentMl), consumedMl: round3(x.consumedMl), consumedValue: round2(x.consumedValue), varianceMl: round3(x.varianceMl),
       closingMl: round3(x.closingMl), closingValue: round2(x.closingValue),
     };
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSUMPTION and MOVEMENT reports. Both are the same ledger read two ways, so they always agree with each other and
+// with the Stock List:
+//
+//   closing = opening + opening stock entered + received + adjustments − consumed + count variance
+//
+// (issuing to the bar moves stock from the store to the bar and changes no total).
+//   consumed  = sold + breakage + complimentary + party — what the bar RECORDED as gone, written to the ledger when the
+//               bar day is closed
+//   variance  = the physical count against what was expected (negative = short, positive = excess), also written at close
+//   actual    = consumed − variance — what really left the bar: a shortage is stock that was drunk but never rung up
+// ─────────────────────────────────────────────────────────────────────────────
+const blankStats = () => ({ openStoreMl: 0, openBarMl: 0, openingEntryMl: 0, receivedMl: 0, adjustmentMl: 0, issuedMl: 0, soldMl: 0, breakageMl: 0, complimentaryMl: 0, partyMl: 0, varianceMl: 0, closeStoreMl: 0, closeBarMl: 0 });
+
+/** What happened to each product in [d0, d1): its balances before d0 and at the end, and every kind of movement in between. */
+export function windowStats(movements, d0, d1) {
+  const out = new Map();
+  for (const r of movements) {
+    const t = new Date(r.date).getTime();
+    if (t >= d1.getTime()) continue;
+    const k = String(r.productId);
+    if (!out.has(k)) out.set(k, blankStats());
+    const a = out.get(k);
+    const q = Number(r.qtyMl) || 0, bar = r.location === "bar";
+    if (bar) a.closeBarMl += q; else a.closeStoreMl += q;
+    if (t < d0.getTime()) { if (bar) a.openBarMl += q; else a.openStoreMl += q; continue; }
+    if (r.type === "opening") a.openingEntryMl += q;
+    else if (r.type === "receipt") a.receivedMl += q;
+    else if (r.type === "adjustment") a.adjustmentMl += q;
+    else if (r.type === "transfer-out") a.issuedMl += -q;
+    else if (r.type === "sale") a.soldMl += -q;
+    else if (r.type === "breakage") a.breakageMl += -q;
+    else if (r.type === "complimentary") a.complimentaryMl += -q;
+    else if (r.type === "party") a.partyMl += -q;
+    else if (r.type === "bar-count") a.varianceMl += q;
+  }
+  for (const a of out.values()) for (const k of Object.keys(a)) a[k] = round3(a[k]);
+  return out;
+}
+
+/** One report row from a product's stats, with `cpm` = cost per ml (values are at today's purchase price). */
+export function statementRow(s, cpm = 0) {
+  const openingMl = round3(s.openStoreMl + s.openBarMl), closingMl = round3(s.closeStoreMl + s.closeBarMl);
+  const consumedMl = round3(s.soldMl + s.breakageMl + s.complimentaryMl + s.partyMl);
+  const actualMl = round3(consumedMl - s.varianceMl);
+  return {
+    openingMl, openingEntryMl: s.openingEntryMl, receivedMl: s.receivedMl, issuedMl: s.issuedMl, adjustmentMl: s.adjustmentMl,
+    soldMl: s.soldMl, breakageMl: s.breakageMl, complimentaryMl: s.complimentaryMl, partyMl: s.partyMl, consumedMl, varianceMl: s.varianceMl, actualMl,
+    closingMl, closingStoreMl: s.closeStoreMl, closingBarMl: s.closeBarMl,
+    openingValue: round2(openingMl * cpm), closingValue: round2(closingMl * cpm), consumedValue: round2(consumedMl * cpm), actualValue: round2(actualMl * cpm),
+  };
+}
+export const STATEMENT_ML = ["openingMl", "openingEntryMl", "receivedMl", "issuedMl", "adjustmentMl", "soldMl", "breakageMl", "complimentaryMl", "partyMl", "consumedMl", "varianceMl", "actualMl", "closingMl", "closingStoreMl", "closingBarMl"];
+export const STATEMENT_VALUE = ["openingValue", "closingValue", "consumedValue", "actualValue"];
+/** Add rows up (every quantity and every value). */
+export function addStatementRows(rows) {
+  const t = {};
+  for (const k of STATEMENT_ML) t[k] = round3(rows.reduce((s, r) => s + r[k], 0));
+  for (const k of STATEMENT_VALUE) t[k] = round2(rows.reduce((s, r) => s + r[k], 0));
+  return t;
+}
+/** Anything at all to show for this product in the movement report. */
+export const hasMovement = (r) => ["openingMl", "closingMl", "openingEntryMl", "receivedMl", "issuedMl", "adjustmentMl", "consumedMl", "varianceMl"].some((k) => Math.abs(r[k]) > EPS);
+
+/** The days or months of [from, to] as windows, clipped to the range so the buckets always add up to the whole. */
+export function statementBuckets(from, to, groupBy) {
+  const end = new Date(dayStartOf(to).getTime() + DAY), start = dayStartOf(from);
+  if (groupBy === "day") {
+    const out = [];
+    for (let t = start.getTime(); t < end.getTime(); t += DAY) { const d0 = new Date(t); out.push({ key: dayKeyOf(d0), d0, d1: new Date(t + DAY) }); }
+    return out;
+  }
+  return monthKeys(from, to).map((key) => {
+    const w = monthWindow(key);
+    return { key, d0: w.d0.getTime() < start.getTime() ? start : w.d0, d1: w.d1.getTime() > end.getTime() ? end : w.d1 };
   });
 }

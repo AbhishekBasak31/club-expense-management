@@ -8,9 +8,19 @@ import { DATE_RE, EPS, round3, toMl, splitMl } from "../Utils/AlcoholStock.js";
 import {
   DEFAULT_PEG_ML, DEFAULT_LARGE_PEG_ML, DEFAULT_TOLERANCE_ML, round2, dayKey, dayStartOf, costPerMl,
   summariseBarDay, expectedClosing, varianceStatus, firstBlockingDay, validateOutflow,
+  GRID_VIEWS, MAX_GRID_DAYS, MAX_GRID_MONTHS, buildConsumptionGrid, gridBuckets,
 } from "../Utils/AlcoholBar.js";
 import { loadContext, storeOutflowLimit, lastClosedDayKey, nextNoteNo } from "./AlcoholStock.controller.js";
 
+
+
+// A REAL calendar date: "2026-02-30" would quietly become 2 March and "2026-13-45" is no date at all.
+// Kept in this file on purpose, so the bar controller works whichever version of the stock controller is installed.
+const isRealDate = (s) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return false;
+  const d = new Date(`${s}T00:00:00.000Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ALCOHOL BAR — Phase 2: issue notes (store → bar), the daily bar register, closing a day, and the variance report.
@@ -340,4 +350,27 @@ export const getVariance = async (req, res) => {
     totals: { soldMl: sum("soldMl"), theoreticalMl: sum("theoreticalMl"), actualMl: sum("actualMl"), varianceMl: sum("varianceMl"), shortValue, excessValue, netValue: round2(shortValue + excessValue) },
   });
 };
+
+// ── consumption grid: ?view=day|month|year&from=YYYY-MM-DD[&to=YYYY-MM-DD] ─────────────────────────────────────
+//   day  — one date, split into the hours it sold in;  month — the days from..to;  year — the months from..to
+export const getConsumptionGrid = async (req, res) => {
+  const view = String(req.query.view || "");
+  if (!GRID_VIEWS.includes(view)) return sendError(res, `view must be one of: ${GRID_VIEWS.join(", ")}.`);
+  const from = String(req.query.from || ""), to = view === "day" ? from : String(req.query.to || "");
+  if (!isRealDate(from) || !isRealDate(to)) return sendError(res, "'from' and 'to' dates (YYYY-MM-DD) are required.");
+  if (from > to) return sendError(res, "'from' must not be after 'to'.");
+  if (view === "month" && gridBuckets("month", from, to).length > MAX_GRID_DAYS) return sendError(res, `The monthly view shows at most ${MAX_GRID_DAYS} days.`);
+  if (view === "year" && gridBuckets("year", from, to).length > MAX_GRID_MONTHS) return sendError(res, `The yearly view shows at most ${MAX_GRID_MONTHS} months.`);
+  const ctx = await loadContext();
+  const d1 = new Date(dayStartOf(to).getTime() + DAY);
+  const [barMovements, lines, closedDays] = await Promise.all([
+    AlcoholStockMovement.find({ location: "bar", date: { $lt: d1 } }).lean(),
+    AlcoholSaleLine.find({ day: { $gte: from, $lte: to } }).lean(),
+    AlcoholBarDay.find({ status: "closed", date: { $gte: dayStartOf(from), $lt: d1 } }).lean(),
+  ]);
+  const products = ctx.items.filter((i) => i.unitMl != null).map(({ product: p, unitMl }) => ({ productId: String(p._id), productName: p.name, alcoholType: p.baseCategoryName || "", unitMl }));
+  const grid = buildConsumptionGrid({ view, from, to, products, barMovements, lines });
+  return sendSuccess(res, { view, from, to, closedDays: closedDays.length, ...grid });
+};
+
  

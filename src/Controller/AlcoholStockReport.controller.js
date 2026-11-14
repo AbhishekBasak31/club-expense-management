@@ -1,13 +1,17 @@
+
 import { AlcoholStockMovement } from "../Model/AlcoholStockMovement.model.js";
+import { AlcoholBarDay } from "../Model/AlcoholBarDay.model.js";
 import { ExpenseEntry } from "../Model/Expense.modal.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
-import { DATE_RE, round3, normName } from "../Utils/AlcoholStock.js";
+import { DATE_RE, EPS, round3, normName } from "../Utils/AlcoholStock.js";
 import { round2, costPerMl } from "../Utils/AlcoholBar.js";
 import {
-  REPORT_NAMES, DEFAULT_COVER_DAYS, dayStartOf, dayKeyOf, daysBetween, monthKeys, monthWindow,
+  REPORT_NAMES, STATEMENT_GROUPS, MAX_STATEMENT_DAYS, MAX_STATEMENT_MONTHS, DEFAULT_COVER_DAYS, dayStartOf, dayKeyOf, daysBetween, monthKeys, monthWindow,
   balancesAsOf, rangeActivity, classifyStock, receiptValue, groupReceipts, monthlyRows,
+  windowStats, statementRow, addStatementRows, hasMovement, statementBuckets,
 } from "../Utils/AlcoholStockReport.js";
 import { loadContext } from "./AlcoholStock.controller.js";
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ALCOHOL STOCK REPORTS — GET /alcohol-stock/report?name=…&from=…&to=…[&productId&type&brand…]
@@ -17,6 +21,8 @@ import { loadContext } from "./AlcoholStock.controller.js";
 //   receiving  — purchases received into the store, by line / vendor / month / product / brand
 //   slow       — stock that is not moving: dead (nothing moved in the period) or slow (long cover)
 //   monthly    — purchase vs consumption, month by month, reconciled to the closing stock
+//   consumption — what each alcohol used: sold, breakage, complimentary, party, count variance, and what really left (rows per alcohol, day or month)
+//   movement   — a stock statement: opening, received, issued to the bar, adjusted, consumed, count variance, closing (same row choices)
 //
 // All of them read the same ledger the Stock List, the Bar register and the variance report read, so none can
 // disagree. `from`/`to` are inclusive dates; the page offers day, month and financial-year presets.
@@ -147,6 +153,38 @@ export const getStockReport = async (req, res) => {
     }).sort((x, y) => rank[x.cls] - rank[y.cls] || (x.cls === "slow" ? y.coverDays - x.coverDays : y.stockValue - x.stockValue) || x.productName.localeCompare(y.productName));
     const by = (cls) => { const r = rows.filter((x) => x.cls === cls); return { count: r.length, value: round2(r.reduce((t, x) => t + x.stockValue, 0)) }; };
     return sendSuccess(res, { name, from: fromDate, to, days, coverDays: coverLimit, filters, rows, summary: { dead: by("dead"), slow: by("slow"), ok: by("ok") } });
+  }
+
+  // ── consumption and movement ──────────────────────────────────────────────
+  // The same ledger read two ways: `movement` is the stock statement, `consumption` is what the bar used. Rows are one per alcohol
+  // (default), or one per day / month for a trend. Consumption reaches the ledger when a bar day is CLOSED, so `closedDates` says
+  // which days of the period are in; the page points out the days that are not.
+  if (name === "consumption" || name === "movement") {
+    const by = req.query.groupBy || "product";
+    if (!STATEMENT_GROUPS.includes(by)) return sendError(res, `groupBy must be one of: ${STATEMENT_GROUPS.join(", ")}.`);
+    if (by === "day" && daysBetween(fromDate, to) > MAX_STATEMENT_DAYS) return sendError(res, `By day needs a period of at most ${MAX_STATEMENT_DAYS} days.`);
+    if (by === "month" && monthKeys(fromDate, to).length > MAX_STATEMENT_MONTHS) return sendError(res, `By month needs a period of at most ${MAX_STATEMENT_MONTHS} months.`);
+    const includeZero = req.query.includeZero === "true";
+    const movements = (await AlcoholStockMovement.find({ date: { $lt: d1 } }).lean()).filter((m) => include(String(m.productId)) && ctx.byId.get(String(m.productId))?.unitMl != null);
+    const cpmOf = (pid) => { const i = ctx.byId.get(pid); return i && i.unitMl ? costPerMl(priceOf(i.product), i.unitMl) : 0; };
+    const rowsOf = (w0, w1) => [...windowStats(movements, w0, w1)].map(([pid, st]) => ({ pid, row: statementRow(st, cpmOf(pid)) }));
+    const whole = rowsOf(d0, d1);
+    const wanted = (r) => includeZero || (name === "consumption" ? Math.abs(r.consumedMl) > EPS || Math.abs(r.varianceMl) > EPS : hasMovement(r));
+    let rows, totals;
+    if (by === "product") {
+      rows = whole.filter((x) => wanted(x.row)).map(({ pid, row }) => ({ ...meta(ctx.byId.get(pid).product), unitMl: ctx.byId.get(pid).unitMl, ...row }));
+      totals = addStatementRows(rows);
+      rows = rows.map((r) => ({ ...r, share: name === "consumption" && totals.consumedMl > 0 ? round2((r.consumedMl / totals.consumedMl) * 100) : 0 }))
+        .sort((a, b) => (name === "consumption" ? b.consumedMl - a.consumedMl : 0) || a.productName.localeCompare(b.productName));
+    } else {
+      rows = statementBuckets(fromDate, to, by).map((b) => ({ key: b.key, ...addStatementRows(rowsOf(b.d0, b.d1).map((x) => x.row)) }));
+      totals = addStatementRows(whole.map((x) => x.row));
+    }
+    const closed = await AlcoholBarDay.find({ status: "closed", date: { $gte: d0, $lt: d1 } }).lean();
+    return sendSuccess(res, {
+      name, from: fromDate, to, groupBy: by, days: daysBetween(fromDate, to), filters, rows, totals,
+      closedDates: closed.map((d) => dayKeyOf(d.date)).sort(),
+    });
   }
 
   // ── monthly purchase vs consumption ───────────────────────────────────────

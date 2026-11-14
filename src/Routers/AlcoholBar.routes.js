@@ -1,5 +1,5 @@
 import express from "express";
-import { getRegister, saveDay, closeDay, reopenDay, createIssue, getIssues, getVariance } from "../Controller/AlcoholBar.controller.js";
+import { getRegister, saveDay, closeDay, reopenDay, createIssue, getIssues, getVariance, getConsumptionGrid } from "../Controller/AlcoholBar.controller.js";
 import { authenticate } from "../../src/Middleware/auth.middleware.js";
 import { asyncHandler } from "../../src/Utils/Asynchandeler.js";
 
@@ -13,5 +13,6 @@ router.post("/reopen",   asyncHandler(reopenDay));     // { date, reason } — t
 router.post("/issues",   asyncHandler(createIssue));   // { date, remark?, lines:[{ productId, bottles, looseMl }] }
 router.get ("/issues",   asyncHandler(getIssues));     // ?from&to — the issue register
 router.get ("/variance", asyncHandler(getVariance));   // ?from&to — sales vs actual use, closed days
+router.get ("/consumption-grid", asyncHandler(getConsumptionGrid)); // ?view=day|month|year&from[&to] — consumption by hour / day / month
 
 export default router;

@@ -3,6 +3,7 @@ import {
   getAlcoholStock, getAlcoholStockAlerts, getPendingReceipts, receiveStock,
   setOpeningStock, updateLevels, allocateToBar, adjustStock, getMovements,
 } from "../Controller/AlcoholStock.controller.js";
+import { getStockReport } from "../Controller/AlcoholStockReport.controller.js";
 import { authenticate } from "../../src/Middleware/auth.middleware.js";
 import { asyncHandler } from "../../src/Utils/Asynchandeler.js";
 
@@ -13,6 +14,7 @@ router.get ("/",          asyncHandler(getAlcoholStock));        // ?month=YYYY-
 router.get ("/alerts",    asyncHandler(getAlcoholStockAlerts));  // what the bell shows
 router.get ("/pending",   asyncHandler(getPendingReceipts));     // purchase lines waiting to be received
 router.get ("/movements", asyncHandler(getMovements));           // ?productId&from&to&location&type
+router.get ("/report",    asyncHandler(getStockReport));         // ?name=valuation|movements|receiving|slow|monthly|consumption|movement&from&to&productId&type&brand[&groupBy&includeZero]
 router.post("/receive",   asyncHandler(receiveStock));           // { lines:[{ entryId, itemId, qty? }] }
 router.post("/opening",   asyncHandler(setOpeningStock));        // { date, items:[{ productId, bottles, looseMl }] }
 router.put ("/levels",    asyncHandler(updateLevels));           // { productId, min?, max?, barPar?, leadTimeDays? }
