@@ -45,6 +45,8 @@ import AlcoholBarRouter from "./src/Routers/AlcoholBar.routes.js";
 import AlcoholSalesRouter from "./src/Routers/AlcoholSales.route.js";
 
 
+import AlcoholKickbackRouter from "./src/Routers/AlcoholKickBack.route.js"
+
 const app  = express();
 const PORT = process.env.PORT || 7000; 
 
@@ -160,6 +162,7 @@ app.use("/api/v1/alcohol-purchase-lines", AlcoholPurchaseLineRouter);
 app.use("/api/v1/alcohol-stock/", AlcoholStockRouter);
 app.use("/api/v1/alcohol-bar/", AlcoholBarRouter);
 app.use("/api/v1/alcohol-sales", AlcoholSalesRouter);
+app.use("/api/v1/alcohol-kickback", AlcoholKickbackRouter);
 
 
 app.use('/uploads', express.static('uploads'));
