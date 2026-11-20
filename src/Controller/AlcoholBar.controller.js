@@ -4,15 +4,13 @@ import { AlcoholBarDay } from "../Model/AlcoholBarDay.model.js";
 import { AlcoholDailySale } from "../Model/AlcoholDailySales.model.js";
 import { AlcoholSaleLine } from "../Model/AlcoholSalesLine.modal.js";
 import { sendSuccess, sendError } from "../Utils/Apirespondse.js";
-import { DATE_RE, EPS, round3, toMl, splitMl } from "../Utils/AlcoholStock.js";
+import { EPS, round3, toMl, splitMl } from "../Utils/AlcoholStock.js";
 import {
   DEFAULT_PEG_ML, DEFAULT_LARGE_PEG_ML, DEFAULT_TOLERANCE_ML, round2, dayKey, dayStartOf, costPerMl,
   summariseBarDay, expectedClosing, varianceStatus, firstBlockingDay, validateOutflow,
   GRID_VIEWS, MAX_GRID_DAYS, MAX_GRID_MONTHS, buildConsumptionGrid, gridBuckets,
 } from "../Utils/AlcoholBar.js";
 import { loadContext, storeOutflowLimit, lastClosedDayKey, nextNoteNo } from "./AlcoholStock.controller.js";
-
-
 
 // A REAL calendar date: "2026-02-30" would quietly become 2 March and "2026-13-45" is no date at all.
 // Kept in this file on purpose, so the bar controller works whichever version of the stock controller is installed.
@@ -364,13 +362,11 @@ export const getConsumptionGrid = async (req, res) => {
   const ctx = await loadContext();
   const d1 = new Date(dayStartOf(to).getTime() + DAY);
   const [barMovements, lines, closedDays] = await Promise.all([
-    AlcoholStockMovement.find({ location: "bar", date: { $lt: d1 } }).lean(),
+    AlcoholStockMovement.find(view === "day" ? { location: "bar", date: { $lt: d1 } } : { date: { $lt: d1 } }).lean(),   // month / year = whole stock
     AlcoholSaleLine.find({ day: { $gte: from, $lte: to } }).lean(),
     AlcoholBarDay.find({ status: "closed", date: { $gte: dayStartOf(from), $lt: d1 } }).lean(),
   ]);
-  const products = ctx.items.filter((i) => i.unitMl != null).map(({ product: p, unitMl }) => ({ productId: String(p._id), productName: p.name, alcoholType: p.baseCategoryName || "", unitMl }));
+  const products = ctx.items.filter((i) => i.unitMl != null).map(({ product: p, unitMl }) => ({ productId: String(p._id), productName: p.name, alcoholType: p.baseCategoryName || "", unitMl, costPerMl: costPerMl(Number(p.currentPrice ?? p.purchasePrice) || 0, unitMl) }));
   const grid = buildConsumptionGrid({ view, from, to, products, barMovements, lines });
   return sendSuccess(res, { view, from, to, closedDays: closedDays.length, ...grid });
 };
-
- 

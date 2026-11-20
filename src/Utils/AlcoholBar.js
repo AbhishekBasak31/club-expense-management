@@ -141,14 +141,18 @@ export function buildConsumptionGrid({ view, from, to, products, barMovements, l
   for (const p of products) {
     const id = String(p.productId);
     let opening = 0;
-    const per = new Map(buckets.map((b) => [b.key, { received: 0, adj: 0, count: 0, other: 0, sold: 0 }]));
+    const whole = view !== "day";   // month / year read the WHOLE stock (store + bar); the day view stays the bar
+    const per = new Map(buckets.map((b) => [b.key, { received: 0, adj: 0, count: 0, other: 0, sold: 0, purchases: 0, openAdd: 0 }]));
     for (const m of moves.get(id) || []) {
       const t = new Date(m.date).getTime(), q = Number(m.qtyMl) || 0;
       if (t < start.getTime()) { opening += q; continue; }
       if (t >= end.getTime()) continue;
       const b = per.get(view === "day" ? from : bucketOf(new Date(m.date).toISOString()));
       if (!b) continue;
-      if (m.type === "transfer-in") b.received += q;
+      if (whole && m.type === "receipt") b.purchases += q;          // goods bought
+      else if (whole && m.type === "opening") b.openAdd += q;       // opening stock keyed in during the period
+      else if (whole && (m.type === "transfer-in" || m.type === "transfer-out")) continue;   // store <-> bar nets to zero
+      else if (m.type === "transfer-in") b.received += q;
       else if (m.type === "sale") continue;                       // sold comes from the bill lines
       else if (m.type === "bar-count") b.count += q;
       else if (m.type === "breakage" || m.type === "complimentary" || m.type === "party") b.other += -q;
@@ -158,19 +162,21 @@ export function buildConsumptionGrid({ view, from, to, products, barMovements, l
     for (const l of mine) { const b = per.get(view === "day" ? from : view === "year" ? String(l.day).slice(0, 7) : String(l.day)); if (b) b.sold += Number(l.ml) || 0; }
 
     let o = round3(opening), anyActivity = Math.abs(o) > EPS || mine.length > 0;
-    const cells = {}; let first = null, last = 0, soldAll = 0, consAll = 0;
+    const cells = {}; let first = null, last = 0, soldAll = 0, consAll = 0, purAll = 0;
     for (const b of buckets) {
       const x = per.get(b.key);
       const sold = round3(x.sold), other = round3(x.other);
-      const closing = round3(o + x.received + x.adj + x.count - sold - other);
-      if ([x.received, x.adj, x.count, other, sold].some((v) => Math.abs(v) > EPS)) anyActivity = true;
-      cells[b.key] = { openingMl: o, soldMl: sold, closingMl: closing, consumptionMl: round3(sold + other) };
+      o = round3(o + x.openAdd);
+      const closing = round3(o + x.received + x.purchases + x.adj + x.count - sold - other);
+      if ([x.received, x.adj, x.count, other, sold, x.purchases, x.openAdd].some((v) => Math.abs(v) > EPS)) anyActivity = true;
+      cells[b.key] = { openingMl: o, purchasesMl: round3(x.purchases), soldMl: sold, closingMl: closing, consumptionMl: round3(sold + other) };
+      purAll += x.purchases;
       if (first === null) first = o;
       last = closing; soldAll += sold; consAll += sold + other; o = closing;
     }
     if (!anyActivity) continue;
 
-    const row = { productId: id, productName: p.productName, alcoholType: p.alcoholType || "", unitMl: p.unitMl, openingMl: first ?? 0, closingMl: last, soldMl: round3(soldAll), consumptionMl: round3(consAll) };
+    const row = { productId: id, productName: p.productName, alcoholType: p.alcoholType || "", unitMl: p.unitMl, costPerMl: Number(p.costPerMl) || 0, openingMl: first ?? 0, purchasesMl: round3(purAll), closingMl: last, soldMl: round3(soldAll), consumptionMl: round3(consAll) };
     if (view === "day") {
       const byHour = {};
       for (const l of mine) {
@@ -189,7 +195,7 @@ export function buildConsumptionGrid({ view, from, to, products, barMovements, l
   rows.sort((a, b) => a.productName.localeCompare(b.productName));
 
   const sum = (f) => round3(rows.reduce((t, r) => t + f(r), 0));
-  const totals = { openingMl: sum((r) => r.openingMl), soldMl: sum((r) => r.soldMl), closingMl: sum((r) => r.closingMl), consumptionMl: sum((r) => r.consumptionMl) };
+  const totals = { openingMl: sum((r) => r.openingMl), purchasesMl: sum((r) => r.purchasesMl || 0), soldMl: sum((r) => r.soldMl), closingMl: sum((r) => r.closingMl), consumptionMl: sum((r) => r.consumptionMl) };
   if (view === "day") {
     totals.hours = {};
     for (const c of columns) {
@@ -200,9 +206,9 @@ export function buildConsumptionGrid({ view, from, to, products, barMovements, l
   } else {
     totals.cells = {};
     for (const c of columns) {
-      const t = { openingMl: 0, soldMl: 0, closingMl: 0, consumptionMl: 0 };
-      for (const r of rows) { const x = r.cells[c.key]; t.openingMl += x.openingMl; t.soldMl += x.soldMl; t.closingMl += x.closingMl; t.consumptionMl += x.consumptionMl; }
-      totals.cells[c.key] = { openingMl: round3(t.openingMl), soldMl: round3(t.soldMl), closingMl: round3(t.closingMl), consumptionMl: round3(t.consumptionMl) };
+      const t = { openingMl: 0, purchasesMl: 0, soldMl: 0, closingMl: 0, consumptionMl: 0 };
+      for (const r of rows) { const x = r.cells[c.key]; t.openingMl += x.openingMl; t.purchasesMl += x.purchasesMl; t.soldMl += x.soldMl; t.closingMl += x.closingMl; t.consumptionMl += x.consumptionMl; }
+      totals.cells[c.key] = { openingMl: round3(t.openingMl), purchasesMl: round3(t.purchasesMl), soldMl: round3(t.soldMl), closingMl: round3(t.closingMl), consumptionMl: round3(t.consumptionMl) };
     }
   }
   return { columns, rows, totals };
